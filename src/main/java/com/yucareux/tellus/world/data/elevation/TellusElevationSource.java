@@ -62,8 +62,12 @@ public final class TellusElevationSource implements TellusCacheHandle {
    private static final double RESOLUTION_METERS = 30.0;
    private static final double OPENWATERS_NOMINAL_RESOLUTION_METERS = 463.0;
    public static final double MAPTERHORN_SEA_LEVEL_THRESHOLD_METERS = 0.0;
-   private static final String MAPTERHORN_ENDPOINT = "https://tiles.mapterhorn.com";
-   private static final String OPENWATERS_ENDPOINT = "https://tiles.openwaters.io/seascape";
+   // A mirror serves {z}/{x}/{y}.webp under these and answers 404 for tiles it does not hold, as the official
+   // servers do. Its tiles share the disk cache with the official ones. OpenWaters itself upsamples coarse data
+   // into every zoom, so a mirror holding only its stored tiles leaves .missing markers for the rest; delete
+   // tellus/cache/elevation-openwaters before going back to the official server.
+   private static final String MAPTERHORN_ENDPOINT = endpointProperty("tellus.mapterhorn.endpoint", "https://tiles.mapterhorn.com");
+   private static final String OPENWATERS_ENDPOINT = endpointProperty("tellus.openwaters.endpoint", "https://tiles.openwaters.io/seascape");
    private static final int MAX_CACHE_TILES = intProperty("tellus.elevation.cacheTiles", 512);
    private static final int RECENT_TILES = 32;
    private static final int AREA_PREFETCH_SAMPLE_POINTS = intProperty("tellus.elevation.areaPrefetch.samples", 25);
@@ -2008,6 +2012,35 @@ public final class TellusElevationSource implements TellusCacheHandle {
    private static boolean booleanProperty(String key, boolean defaultValue) {
       String value = System.getProperty(key);
       return value == null ? defaultValue : Boolean.parseBoolean(value);
+   }
+
+   /** The tile server base URL that {@code key} names, without a trailing slash; {@code fallback} when unset or invalid. */
+   static String endpointProperty(String key, String fallback) {
+      String value = System.getProperty(key);
+      if (value == null || value.isBlank()) {
+         return fallback;
+      }
+
+      String endpoint = value.trim();
+      while (endpoint.endsWith("/")) {
+         endpoint = endpoint.substring(0, endpoint.length() - 1);
+      }
+      try {
+         URI uri = URI.create(endpoint);
+         String scheme = uri.getScheme();
+         if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+            && uri.getHost() != null
+            && uri.getRawQuery() == null
+            && uri.getRawFragment() == null) {
+            Tellus.LOGGER.info("Reading elevation tiles for {} from {}", key, endpoint);
+            return endpoint;
+         }
+      } catch (IllegalArgumentException ignored) {
+         // Reported below.
+      }
+
+      Tellus.LOGGER.warn("Ignoring invalid {}='{}', which must be an http(s) URL without a query; using {}", key, value, fallback);
+      return fallback;
    }
 
    private ShortRaster getTile( TellusElevationSource.TileKey key) {

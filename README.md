@@ -189,6 +189,7 @@ This section lets you toggle vanilla structures and world features on or off, su
 - Source: Mapterhorn global terrain tiles.
 - Website: https://mapterhorn.com/
 - In-game processing: sampled as Terrarium elevation tiles, with zoom selected from player scale and cached locally for reuse.
+- A mirror serving the same `{z}/{x}/{y}.webp` tiles, with HTTP 404 for tiles it does not hold, can be selected with `tellus.mapterhorn.endpoint`.
 
 ### OpenWaters Seascape bathymetry
 - Source: OpenWaters Seascape bathymetry raster DEM tiles.
@@ -200,6 +201,7 @@ This section lets you toggle vanilla structures and world features on or off, su
 - DH renders the raw profiled ocean floor by default so deep-water variation remains continuous. Legacy logarithmic depth compression is opt-in through `tellus.dhWaterOceanDepthCompressionEnabled=true` and no longer uses a fixed maximum-depth plateau.
 - When raw bathymetry is deeper than the dimension permits, Tellus now fits it monotonically into the available vertical range instead of clamping every sample to the same bottom Y. Ocean floors reserve eight solid support blocks above the world minimum, configurable with `tellus.water.oceanFloorSupportBlocks` (`2..32`).
 - Compatibility: the serialized `ocean_shoreline_blend` setting is retained but is a no-op for oceans. River/lake shoreline blending is unchanged.
+- A mirror can be selected with `tellus.openwaters.endpoint`. It may hold only the tiles OpenWaters stores and answer HTTP 404 for the rest: Tellus then samples the nearest coarser stored zoom, down to the global z8, where the official server would upsample. Those misses are remembered on disk, so delete `tellus/cache/elevation-openwaters` before switching back to the official server.
 
 ### Open-Meteo (weather)
 - Weather data provided by Open-Meteo.com.
