@@ -13,6 +13,12 @@ import net.minecraft.world.level.ChunkPos;
 public interface TellusRuntimePlatform {
    void registerCommands(Consumer<CommandDispatcher<CommandSourceStack>> registration);
 
+   /** Runs before the server creates any level; its world folder is already known. */
+   void onServerAboutToStart(Consumer<MinecraftServer> callback);
+
+   /** Runs as each server level is created, before any of its chunks generate. */
+   void onServerLevelLoad(Consumer<ServerLevel> callback);
+
    void onServerStarted(Consumer<MinecraftServer> callback);
 
    void onServerStopping(Consumer<MinecraftServer> callback);

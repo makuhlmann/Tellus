@@ -40,6 +40,8 @@ import net.minecraft.util.Mth;
 
 public final class TellusOsmWaterSource implements TellusCacheHandle {
    private static final String PM_TILES_THEME = "base";
+   private static final String PM_TILES_URL_PROPERTY = "tellus.overture.water.pmtiles";
+   private static final String CACHE_FOLDER = "tellus/cache/map/water";
    private static final double MIN_LAT = -85.05112878;
    private static final double MAX_LAT = 85.05112878;
    private static final double MIN_LON = -180.0;
@@ -60,8 +62,9 @@ public final class TellusOsmWaterSource implements TellusCacheHandle {
    private static final java.util.regex.Pattern WATER_FEET = java.util.regex.Pattern.compile("([0-9]+(?:\\.[0-9]+)?)'\\s*(?:([0-9]+(?:\\.[0-9]+)?)\\\")?");
    private static final java.util.regex.Pattern WATER_METERS = java.util.regex.Pattern.compile("([0-9]+(?:\\.[0-9]+)?)\\s*(m|metres|meters|ft|feet|km)?");
    private static final byte[] EMPTY_TILE_PAYLOAD = new byte[0];
-   private final Path cacheRoot;
-   private final PmTilesRangeReader pmTilesReader;
+   private volatile String pmTilesUrl;
+   private volatile Path cacheRoot;
+   private volatile PmTilesRangeReader pmTilesReader;
    private final Object initLock = new Object();
    private final LoadingCache<TellusOsmWaterSource.TileKey, OsmWaterTile> cache;
    private final Set<TellusOsmWaterSource.TileKey> pendingAsyncLoads;
@@ -75,15 +78,7 @@ public final class TellusOsmWaterSource implements TellusCacheHandle {
    private volatile long nextInitializationAttemptNanos;
 
    public TellusOsmWaterSource() {
-      String pmTilesUrl = System.getProperty("tellus.overture.water.pmtiles");
-      if (pmTilesUrl == null || pmTilesUrl.isBlank()) {
-         pmTilesUrl = OvertureTileUrls.defaultThemeUrl(PM_TILES_THEME);
-      }
-
-      this.cacheRoot = TellusPlatform.gameDir()
-         .resolve("tellus/cache/map/water")
-         .resolve(OvertureTileUrls.cacheNamespace(pmTilesUrl));
-      this.pmTilesReader = PmTilesRangeReader.shared(pmTilesUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, DIRECTORY_CACHE_ENTRIES);
+      this.bindArchive(OvertureTileUrls.configuredThemeUrl(PM_TILES_URL_PROPERTY, PM_TILES_THEME));
       this.cache = CacheBuilder.newBuilder().maximumSize(MAX_CACHE_TILES).build(new CacheLoader<TellusOsmWaterSource.TileKey, OsmWaterTile>() {
          public OsmWaterTile load(TellusOsmWaterSource.TileKey key) {
             return TellusOsmWaterSource.this.loadTile(key);
@@ -92,6 +87,30 @@ public final class TellusOsmWaterSource implements TellusCacheHandle {
       this.pendingAsyncLoads = ConcurrentHashMap.newKeySet();
       this.tileLoadFailures = ConcurrentHashMap.newKeySet();
       TellusCacheRegistry.register(this);
+   }
+
+   /** Switches to the archive of the Overture release now in use; false when this source already reads it. */
+   public boolean rebindOvertureArchive() {
+      String pmTilesUrl = OvertureTileUrls.configuredThemeUrl(PM_TILES_URL_PROPERTY, PM_TILES_THEME);
+      synchronized (this.initLock) {
+         if (pmTilesUrl.equals(this.pmTilesUrl)) {
+            return false;
+         }
+
+         this.bindArchive(pmTilesUrl);
+         // The next read opens the new archive's header.
+         this.available = false;
+         this.initialized = false;
+         this.initializationFailures = 0;
+         this.nextInitializationAttemptNanos = 0L;
+         return true;
+      }
+   }
+
+   private void bindArchive(String pmTilesUrl) {
+      this.pmTilesUrl = pmTilesUrl;
+      this.cacheRoot = TellusPlatform.gameDir().resolve(CACHE_FOLDER).resolve(OvertureTileUrls.cacheNamespace(pmTilesUrl));
+      this.pmTilesReader = PmTilesRangeReader.shared(pmTilesUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, DIRECTORY_CACHE_ENTRIES);
    }
 
    public boolean available() {

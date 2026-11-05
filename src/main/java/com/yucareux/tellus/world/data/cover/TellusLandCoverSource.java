@@ -76,6 +76,8 @@ public final class TellusLandCoverSource implements TellusCacheHandle {
    static final int MOSS_LICHEN_CLASS = 100;
 
    private static final String PM_TILES_THEME = "base";
+   private static final String PM_TILES_URL_PROPERTY = "tellus.overture.landCover.pmtiles";
+   private static final String CACHE_FOLDER = "tellus/cache/land-cover-overture";
    private static final String LAND_COVER_LAYER_NAME = "land_cover";
    private static final int PMTILES_TILETYPE_MVT = 1;
    private static final int DEFAULT_TILE_EXTENT = 4096;
@@ -101,8 +103,9 @@ public final class TellusLandCoverSource implements TellusCacheHandle {
    private static final int NEAREST_LAND_CACHE_ENTRIES = intProperty("tellus.landcover.nearestLandCacheEntries", 131072, 1024, 1048576);
    private static final int NEAREST_LAND_NOT_FOUND = -1;
 
-   private final Path cacheRoot;
-   private final PmTilesRangeReader pmTilesReader;
+   private volatile String pmTilesUrl;
+   private volatile Path cacheRoot;
+   private volatile PmTilesRangeReader pmTilesReader;
    private final WorldCoverCogSource worldCoverSource;
    private final Object initLock = new Object();
    private final LoadingCache<TileKey, RasterTile> cache;
@@ -115,15 +118,7 @@ public final class TellusLandCoverSource implements TellusCacheHandle {
    private volatile long nextInitializationAttemptNanos;
 
    public TellusLandCoverSource() {
-      String pmTilesUrl = System.getProperty("tellus.overture.landCover.pmtiles");
-      if (pmTilesUrl == null || pmTilesUrl.isBlank()) {
-         pmTilesUrl = OvertureTileUrls.defaultThemeUrl(PM_TILES_THEME);
-      }
-
-      this.cacheRoot = TellusPlatform.gameDir()
-         .resolve("tellus/cache/land-cover-overture")
-         .resolve(OvertureTileUrls.cacheNamespace(pmTilesUrl));
-      this.pmTilesReader = PmTilesRangeReader.shared(pmTilesUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, DIRECTORY_CACHE_ENTRIES);
+      this.bindArchive(OvertureTileUrls.configuredThemeUrl(PM_TILES_URL_PROPERTY, PM_TILES_THEME));
       this.worldCoverSource = new WorldCoverCogSource();
       this.cache = CacheBuilder.newBuilder().maximumSize(MAX_CACHE_TILES).build(new CacheLoader<TileKey, RasterTile>() {
          @Override
@@ -133,6 +128,30 @@ public final class TellusLandCoverSource implements TellusCacheHandle {
       });
       this.nearestLandCache = CacheBuilder.newBuilder().maximumSize(NEAREST_LAND_CACHE_ENTRIES).build();
       TellusCacheRegistry.register(this);
+   }
+
+   /** Switches to the archive of the Overture release now in use; false when this source already reads it. */
+   public boolean rebindOvertureArchive() {
+      String pmTilesUrl = OvertureTileUrls.configuredThemeUrl(PM_TILES_URL_PROPERTY, PM_TILES_THEME);
+      synchronized (this.initLock) {
+         if (pmTilesUrl.equals(this.pmTilesUrl)) {
+            return false;
+         }
+
+         this.bindArchive(pmTilesUrl);
+         // The next read opens the new archive's header.
+         this.available = false;
+         this.initialized = false;
+         this.initializationFailures = 0;
+         this.nextInitializationAttemptNanos = 0L;
+         return true;
+      }
+   }
+
+   private void bindArchive(String pmTilesUrl) {
+      this.pmTilesUrl = pmTilesUrl;
+      this.cacheRoot = TellusPlatform.gameDir().resolve(CACHE_FOLDER).resolve(OvertureTileUrls.cacheNamespace(pmTilesUrl));
+      this.pmTilesReader = PmTilesRangeReader.shared(pmTilesUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, DIRECTORY_CACHE_ENTRIES);
    }
 
    public boolean isSnowIce(double blockX, double blockZ, double worldScale) {

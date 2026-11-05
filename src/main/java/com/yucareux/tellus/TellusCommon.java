@@ -20,6 +20,7 @@ import com.yucareux.tellus.network.ManagedTerrainStatusPayload;
 import com.yucareux.tellus.network.ManagedTerrainViewPayload;
 import com.yucareux.tellus.platform.TellusPlatform;
 import com.yucareux.tellus.platform.TellusRuntimePlatform;
+import com.yucareux.tellus.world.data.osm.OvertureReleasePin;
 import com.yucareux.tellus.world.realtime.TellusRealtimeManager;
 import com.yucareux.tellus.world.realtime.TellusRealtimeState;
 import com.yucareux.tellus.world.realtime.WeatherTemperaturePolicy;
@@ -227,6 +228,14 @@ public class TellusCommon {
                   )
             )
          );
+      // Before any level loads, so the spawn area already reads the world's own Overture release.
+      runtime.onServerAboutToStart(server -> OvertureReleasePin.bindWorld(worldRoot(server)));
+      runtime.onServerLevelLoad(level -> {
+         if (level.getChunkSource().getGenerator() instanceof EarthChunkGenerator earthGenerator) {
+            OvertureReleasePin.recordForTellusWorld(worldRoot(level.getServer()));
+            earthGenerator.bindLevelStorage(level);
+         }
+      });
       runtime.onServerStarted(server -> server.execute(() -> {
          ServerLevel world = server.getLevel(Level.OVERWORLD);
          if (world != null) {
@@ -282,6 +291,10 @@ public class TellusCommon {
          "Tellus worldgen initialized{}",
          ExperimentalHeightSupport.isRuntimeProfileActive() ? " with the dense global packed-coordinate profile" : ""
       );
+   }
+
+   private static Path worldRoot(MinecraftServer server) {
+      return server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
    }
 
    private static int openGeoTpMap(CommandSourceStack source) {

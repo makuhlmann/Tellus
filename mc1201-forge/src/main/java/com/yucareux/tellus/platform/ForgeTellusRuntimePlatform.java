@@ -13,6 +13,8 @@ import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.level.ChunkEvent;
+import net.minecraftforge.event.level.LevelEvent;
+import net.minecraftforge.event.server.ServerAboutToStartEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 
@@ -20,6 +22,21 @@ public final class ForgeTellusRuntimePlatform implements TellusRuntimePlatform {
    @Override
    public void registerCommands(Consumer<CommandDispatcher<CommandSourceStack>> registration) {
       MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent event) -> registration.accept(event.getDispatcher()));
+   }
+
+   @Override
+   public void onServerAboutToStart(Consumer<MinecraftServer> callback) {
+      MinecraftForge.EVENT_BUS.addListener((ServerAboutToStartEvent event) -> callback.accept(event.getServer()));
+   }
+
+   @Override
+   public void onServerLevelLoad(Consumer<ServerLevel> callback) {
+      MinecraftForge.EVENT_BUS.addListener((LevelEvent.Load event) -> {
+         // Client levels load through the same event.
+         if (event.getLevel() instanceof ServerLevel level) {
+            callback.accept(level);
+         }
+      });
    }
 
    @Override

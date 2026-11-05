@@ -1,14 +1,21 @@
 package com.yucareux.tellus.world.data.osm;
 
 import com.yucareux.tellus.Tellus;
+import com.yucareux.tellus.cache.TellusCacheFiles;
+import com.yucareux.tellus.platform.TellusPlatform;
 import com.yucareux.tellus.world.data.source.InputStreamSafety;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.xml.XMLConstants;
@@ -21,11 +28,15 @@ import org.xml.sax.SAXException;
 public final class OvertureTileUrls {
    private static final String EXTRAS_BUCKET_URL = "https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com";
    private static final String RELEASE_PROPERTY = "tellus.overture.release";
-   private static final String FALLBACK_RELEASE = "2026-06-17.0";
+   // Overture keeps only its last few releases online, so this is a last resort: the newest release an earlier
+   // session listed (LAST_KNOWN_RELEASE_FILE) comes first, and a world keeps the release it recorded.
+   static final String FALLBACK_RELEASE = "2026-10-21.0";
+   private static final String LAST_KNOWN_RELEASE_FILE = "tellus/cache/overture-release-latest.txt";
    private static final int MAX_RELEASE_LISTING_BYTES = 4 * 1024 * 1024;
    private static final Pattern RELEASE_PREFIX_PATTERN = Pattern.compile("tiles/(\\d{4}-\\d{2}-\\d{2}\\.\\d+)/");
    private static final Pattern RELEASE_ID_PATTERN = Pattern.compile("\\d{4}-\\d{2}-\\d{2}\\.\\d+");
    private static volatile String latestRelease;
+   private static volatile String worldRelease;
 
    private OvertureTileUrls() {
    }
@@ -35,9 +46,48 @@ public final class OvertureTileUrls {
       return themeUrl(resolvedRelease(), safeTheme);
    }
 
+   /** The archive a source reads: the URL its own property names, else the theme in the release now in use. */
+   public static String configuredThemeUrl(String urlProperty, String theme) {
+      String configured = System.getProperty(urlProperty);
+      return configured == null || configured.isBlank() ? defaultThemeUrl(theme) : configured;
+   }
+
+   /** The {@code tellus.overture.release} property, else the release of the world being played, else the newest. */
    public static String resolvedRelease() {
       String release = configuredRelease();
-      return release == null ? latestRelease() : release;
+      if (release != null) {
+         return release;
+      }
+
+      String bound = worldRelease;
+      return bound != null ? bound : latestRelease();
+   }
+
+   /** Makes {@code release} the one sources read; they switch to it when {@link OvertureReleasePin} rebinds them. */
+   static void bindWorldRelease(String release) {
+      if (!isValidRelease(release)) {
+         throw new IllegalArgumentException("Invalid Overture release " + release);
+      }
+
+      worldRelease = release;
+   }
+
+   static boolean isValidRelease(String release) {
+      return release != null && RELEASE_ID_PATTERN.matcher(release).matches();
+   }
+
+   /** Orders valid release ids oldest first: by date, then by sequence number, so {@code .10} follows {@code .9}. */
+   static int compareReleases(String left, String right) {
+      int dateOrder = left.substring(0, 10).compareTo(right.substring(0, 10));
+      if (dateOrder != 0) {
+         return dateOrder;
+      }
+
+      String leftSequence = left.substring(11);
+      String rightSequence = right.substring(11);
+      return leftSequence.length() != rightSequence.length()
+         ? Integer.compare(leftSequence.length(), rightSequence.length())
+         : leftSequence.compareTo(rightSequence);
    }
 
    public static String cacheNamespace(String url) {
@@ -49,7 +99,7 @@ public final class OvertureTileUrls {
       return EXTRAS_BUCKET_URL + "/tiles/" + release + "/" + theme + ".pmtiles";
    }
 
-   private static String configuredRelease() {
+   static String configuredRelease() {
       String configured = System.getProperty(RELEASE_PROPERTY);
       if (configured == null || configured.isBlank()) {
          return null;
@@ -76,11 +126,12 @@ public final class OvertureTileUrls {
             return cached;
          }
 
-         try {
-            cached = fetchLatestRelease();
-         } catch (IOException | RuntimeException error) {
-            Tellus.LOGGER.warn("Failed to discover latest Overture tiles release, using {}", FALLBACK_RELEASE, error);
-            cached = FALLBACK_RELEASE;
+         List<String> published = listPublishedReleases();
+         if (published != null) {
+            cached = published.get(published.size() - 1);
+         } else {
+            cached = fallbackRelease();
+            Tellus.LOGGER.warn("Using Overture tiles release {} until the release listing can be read", cached);
          }
 
          latestRelease = cached;
@@ -88,7 +139,58 @@ public final class OvertureTileUrls {
       }
    }
 
-   private static String fetchLatestRelease() throws IOException {
+   /**
+    * The releases Overture publishes now, oldest first, or null when the listing cannot be read. A successful
+    * listing also becomes the newest release this game remembers for sessions that cannot read it.
+    */
+   static List<String> listPublishedReleases() {
+      try {
+         List<String> published = fetchPublishedReleases();
+         String newest = published.get(published.size() - 1);
+         latestRelease = newest;
+         rememberLatestRelease(newest);
+         return published;
+      } catch (IOException | RuntimeException error) {
+         Tellus.LOGGER.warn("Failed to list the published Overture tiles releases", error);
+         return null;
+      }
+   }
+
+   /** The release to read when the listing cannot be: the newest an earlier session listed, else the built-in one. */
+   static String fallbackRelease() {
+      String lastKnown = lastKnownRelease();
+      return lastKnown != null ? lastKnown : FALLBACK_RELEASE;
+   }
+
+   static String lastKnownRelease() {
+      Path path = TellusPlatform.gameDir().resolve(LAST_KNOWN_RELEASE_FILE);
+      try {
+         if (!Files.isRegularFile(path) || Files.size(path) > 64L) {
+            return null;
+         }
+
+         String release = Files.readString(path, StandardCharsets.UTF_8).trim();
+         return isValidRelease(release) ? release : null;
+      } catch (IOException | RuntimeException error) {
+         Tellus.LOGGER.debug("Failed to read the last known Overture release from {}", path, error);
+         return null;
+      }
+   }
+
+   private static void rememberLatestRelease(String release) {
+      if (release.equals(lastKnownRelease())) {
+         return;
+      }
+
+      Path path = TellusPlatform.gameDir().resolve(LAST_KNOWN_RELEASE_FILE);
+      try {
+         TellusCacheFiles.writeBytes(path, release.getBytes(StandardCharsets.UTF_8));
+      } catch (IOException | RuntimeException error) {
+         Tellus.LOGGER.debug("Failed to remember the latest Overture release in {}", path, error);
+      }
+   }
+
+   private static List<String> fetchPublishedReleases() throws IOException {
       URI uri = URI.create(EXTRAS_BUCKET_URL + "/?list-type=2&prefix=tiles/&delimiter=/");
       HttpURLConnection connection = (HttpURLConnection)uri.toURL().openConnection();
       try {
@@ -109,23 +211,20 @@ public final class OvertureTileUrls {
             );
             Document document = newDocumentBuilderFactory().newDocumentBuilder().parse(new ByteArrayInputStream(response));
             NodeList prefixes = document.getElementsByTagName("Prefix");
-            String latest = null;
+            TreeSet<String> releases = new TreeSet<>(OvertureTileUrls::compareReleases);
             for (int i = 0; i < prefixes.getLength(); i++) {
                String prefix = prefixes.item(i).getTextContent();
                Matcher matcher = RELEASE_PREFIX_PATTERN.matcher(prefix);
                if (matcher.matches()) {
-                  String release = matcher.group(1);
-                  if (latest == null || release.compareTo(latest) > 0) {
-                     latest = release;
-                  }
+                  releases.add(matcher.group(1));
                }
             }
 
-            if (latest == null) {
+            if (releases.isEmpty()) {
                throw new IOException("No Overture tile releases found");
             }
 
-            return latest;
+            return List.copyOf(releases);
          } catch (ParserConfigurationException | SAXException error) {
             throw new IOException("Failed to parse Overture release listing", error);
          }

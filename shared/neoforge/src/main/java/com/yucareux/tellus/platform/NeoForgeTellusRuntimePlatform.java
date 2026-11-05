@@ -14,6 +14,8 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedOutEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
+import net.neoforged.neoforge.event.level.LevelEvent;
+import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -22,6 +24,21 @@ public final class NeoForgeTellusRuntimePlatform implements TellusRuntimePlatfor
    @Override
    public void registerCommands(Consumer<CommandDispatcher<CommandSourceStack>> registration) {
       NeoForge.EVENT_BUS.addListener((RegisterCommandsEvent event) -> registration.accept(event.getDispatcher()));
+   }
+
+   @Override
+   public void onServerAboutToStart(Consumer<MinecraftServer> callback) {
+      NeoForge.EVENT_BUS.addListener((ServerAboutToStartEvent event) -> callback.accept(event.getServer()));
+   }
+
+   @Override
+   public void onServerLevelLoad(Consumer<ServerLevel> callback) {
+      NeoForge.EVENT_BUS.addListener((LevelEvent.Load event) -> {
+         // Client levels load through the same event.
+         if (event.getLevel() instanceof ServerLevel level) {
+            callback.accept(level);
+         }
+      });
    }
 
    @Override

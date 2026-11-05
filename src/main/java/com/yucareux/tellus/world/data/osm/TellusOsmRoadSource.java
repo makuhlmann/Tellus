@@ -47,6 +47,8 @@ import net.minecraft.util.Mth;
 
 public final class TellusOsmRoadSource implements TellusCacheHandle {
    private static final String PM_TILES_THEME = "transportation";
+   private static final String PM_TILES_URL_PROPERTY = "tellus.overture.roads.pmtiles";
+   private static final String CACHE_FOLDER = "tellus/cache/map/roads";
    private static final double MIN_LAT = -85.05112878;
    private static final double MAX_LAT = 85.05112878;
    private static final double MIN_LON = -180.0;
@@ -65,8 +67,9 @@ public final class TellusOsmRoadSource implements TellusCacheHandle {
    private static final int PMTILES_TILETYPE_MVT = 1;
    private static final String SEGMENT_LAYER_NAME = "segment";
    private static final byte[] EMPTY_TILE_PAYLOAD = new byte[0];
-   private final Path cacheRoot;
-   private final PmTilesRangeReader pmTilesReader;
+   private volatile String pmTilesUrl;
+   private volatile Path cacheRoot;
+   private volatile PmTilesRangeReader pmTilesReader;
    private final Object initLock = new Object();
    private final LoadingCache<TellusOsmRoadSource.TileKey, OverpassRoadTile> cache;
    private final Set<TellusOsmRoadSource.TileKey> pendingAsyncLoads;
@@ -76,15 +79,7 @@ public final class TellusOsmRoadSource implements TellusCacheHandle {
    private volatile boolean initialized;
 
    public TellusOsmRoadSource() {
-      String pmTilesUrl = System.getProperty("tellus.overture.roads.pmtiles");
-      if (pmTilesUrl == null || pmTilesUrl.isBlank()) {
-         pmTilesUrl = OvertureTileUrls.defaultThemeUrl(PM_TILES_THEME);
-      }
-
-      this.cacheRoot = TellusPlatform.gameDir()
-         .resolve("tellus/cache/map/roads")
-         .resolve(OvertureTileUrls.cacheNamespace(pmTilesUrl));
-      this.pmTilesReader = PmTilesRangeReader.shared(pmTilesUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, DIRECTORY_CACHE_ENTRIES);
+      this.bindArchive(OvertureTileUrls.configuredThemeUrl(PM_TILES_URL_PROPERTY, PM_TILES_THEME));
       this.cache = CacheBuilder.newBuilder().maximumSize(MAX_CACHE_TILES).build(new CacheLoader<TellusOsmRoadSource.TileKey, OverpassRoadTile>() {
          public OverpassRoadTile load(TellusOsmRoadSource.TileKey key) {
             return TellusOsmRoadSource.this.loadTile(key);
@@ -93,6 +88,28 @@ public final class TellusOsmRoadSource implements TellusCacheHandle {
       this.pendingAsyncLoads = ConcurrentHashMap.newKeySet();
       this.tileLoadFailures = ConcurrentHashMap.newKeySet();
       TellusCacheRegistry.register(this);
+   }
+
+   /** Switches to the archive of the Overture release now in use; false when this source already reads it. */
+   public boolean rebindOvertureArchive() {
+      String pmTilesUrl = OvertureTileUrls.configuredThemeUrl(PM_TILES_URL_PROPERTY, PM_TILES_THEME);
+      synchronized (this.initLock) {
+         if (pmTilesUrl.equals(this.pmTilesUrl)) {
+            return false;
+         }
+
+         this.bindArchive(pmTilesUrl);
+         // The next read opens the new archive's header.
+         this.available = false;
+         this.initialized = false;
+         return true;
+      }
+   }
+
+   private void bindArchive(String pmTilesUrl) {
+      this.pmTilesUrl = pmTilesUrl;
+      this.cacheRoot = TellusPlatform.gameDir().resolve(CACHE_FOLDER).resolve(OvertureTileUrls.cacheNamespace(pmTilesUrl));
+      this.pmTilesReader = PmTilesRangeReader.shared(pmTilesUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, DIRECTORY_CACHE_ENTRIES);
    }
 
    public boolean available() {

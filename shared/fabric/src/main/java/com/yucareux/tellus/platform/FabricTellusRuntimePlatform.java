@@ -21,6 +21,16 @@ public final class FabricTellusRuntimePlatform implements TellusRuntimePlatform 
    }
 
    @Override
+   public void onServerAboutToStart(Consumer<MinecraftServer> callback) {
+      ServerLifecycleEvents.SERVER_STARTING.register(callback::accept);
+   }
+
+   @Override
+   public void onServerLevelLoad(Consumer<ServerLevel> callback) {
+      FabricLevelEventsCompat.onLevelLoad(callback);
+   }
+
+   @Override
    public void onServerStarted(Consumer<MinecraftServer> callback) {
       ServerLifecycleEvents.SERVER_STARTED.register(callback::accept);
    }

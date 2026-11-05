@@ -55,6 +55,7 @@ import com.yucareux.tellus.worldgen.tree.TellusProceduralTreeGenerator;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -148,6 +149,7 @@ import net.minecraft.world.level.levelgen.structure.TerrainAdjustment;
 import net.minecraft.world.level.levelgen.structure.StructureSet.StructureSelectionEntry;
 import net.minecraft.world.level.levelgen.structure.pieces.PiecesContainer;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.Vec3;
 
@@ -259,6 +261,8 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    private static final int TERRAIN_REFINEMENT_APPLY_BUDGET_PER_TICK = intProperty(
       "tellus.chunkgen.terrainRefinementApplyBudgetPerTick", 4, 0, 64
    );
+   private static final int REFINEMENT_RESTORE_INTERVAL_TICKS = 20;
+   private static final int REFINEMENT_RESTORE_BUDGET = 32;
    private static final int SPAWN_EXACT_CHUNK_RADIUS = intProperty("tellus.chunkgen.spawnExactChunkRadius", 2, 0, 16);
    private static final int MOVEMENT_PREFETCH_FORWARD_EXTRA = intProperty("tellus.prefetch.movement.forwardExtra", 2, 0, 32);
    private static final int MOVEMENT_PREFETCH_SIDE_EXTRA = intProperty("tellus.prefetch.movement.sideExtra", 1, 0, 32);
@@ -418,6 +422,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    private final AtomicBoolean fastSpawnMode = new AtomicBoolean(true);
    private final AtomicLong chunkDetailGenerationSequence = new AtomicLong();
    private final ConcurrentHashMap<Long, Long> terrainGenerationStamps = new ConcurrentHashMap<>();
+   // Bound when the level loads; shells built before then (none in practice) are only refined in memory.
+   private volatile PendingTerrainRefinementStore pendingRefinementStore;
+   private final Set<Long> restoredRefinements = ConcurrentHashMap.newKeySet();
+   private int ticksUntilRefinementRestore;
    private final TellusLandmarks landmarks;
 
    public EarthChunkGenerator(BiomeSource biomeSource, EarthGeneratorSettings settings) {
@@ -641,6 +649,98 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
 
    private boolean hasPendingTerrainRefinement(ChunkPos pos) {
       return this.terrainRefinementManager.hasPending(pos);
+   }
+
+   /** Opens the records of this level's shells still waiting for a refinement; called once the level loads. */
+   public void bindLevelStorage(ServerLevel level) {
+      Path worldRoot = level.getServer().getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
+      Path directory = PendingTerrainRefinementStore.directoryFor(worldRoot, MinecraftVersionCompat.keyId(level.dimension()));
+      PendingTerrainRefinementStore current = this.pendingRefinementStore;
+      if (current == null || !current.directory().equals(directory)) {
+         this.pendingRefinementStore = PendingTerrainRefinementStore.open(directory);
+      }
+   }
+
+   private void recordPendingTerrainRefinement(EarthChunkGenerator.TerrainShellBuildResult shell) {
+      PendingTerrainRefinementStore store = this.pendingRefinementStore;
+      // Other biome sources refine with the shell's own biomes, which the record does not keep.
+      if (store != null && this.biomeSource instanceof EarthBiomeSource) {
+         store.write(
+            new PendingTerrainRefinementStore.Record(
+               MinecraftVersionCompat.chunkX(shell.pos()),
+               MinecraftVersionCompat.chunkZ(shell.pos()),
+               shell.minY(),
+               shell.maxY(),
+               shell.terrainSurfaces(),
+               shell.waterSurfaces(),
+               shell.waterFlags(),
+               shell.oceanFlags()
+            )
+         );
+      }
+   }
+
+   /**
+    * Refines loaded chunks whose shell an earlier session recorded but never refined. Records of chunks nobody
+    * loads stay on disk instead of holding a prepared refinement in memory, and each record is tried once per
+    * session, so a chunk whose refinement keeps failing is retried after the next restart, not every second.
+    */
+   private void restorePendingTerrainRefinements(ServerLevel level) {
+      PendingTerrainRefinementStore store = this.pendingRefinementStore;
+      if (store == null || store.isEmpty() || --this.ticksUntilRefinementRestore > 0) {
+         return;
+      }
+
+      this.ticksUntilRefinementRestore = REFINEMENT_RESTORE_INTERVAL_TICKS;
+      if (!(this.biomeSource instanceof EarthBiomeSource)) {
+         return;
+      }
+
+      int started = 0;
+      for (long chunkKey : store.chunkKeys()) {
+         if (started >= REFINEMENT_RESTORE_BUDGET) {
+            break;
+         }
+
+         int chunkX = ChunkPos.getX(chunkKey);
+         int chunkZ = ChunkPos.getZ(chunkKey);
+         if (this.restoredRefinements.contains(chunkKey)
+            || this.terrainRefinementManager.hasPending(chunkKey)
+            || level.getChunkSource().getChunkNow(chunkX, chunkZ) == null
+            || !this.restoredRefinements.add(chunkKey)) {
+            continue;
+         }
+
+         started++;
+         TellusWorldgenSources.submitTerrainDetailTask(() -> this.restorePendingTerrainRefinement(store, chunkX, chunkZ, chunkKey));
+      }
+   }
+
+   private void restorePendingTerrainRefinement(PendingTerrainRefinementStore store, int chunkX, int chunkZ, long chunkKey) {
+      PendingTerrainRefinementStore.Record record = store.read(chunkX, chunkZ);
+      if (record == null || this.terrainRefinementManager.hasPending(chunkKey)) {
+         return;
+      }
+
+      long generationStamp = this.chunkDetailGenerationSequence.incrementAndGet();
+      // The refinement reads only what the shell placed per column; cover classes and biomes are computed afresh.
+      EarthChunkGenerator.TerrainShellBuildResult shell = new EarthChunkGenerator.TerrainShellBuildResult(
+         new ChunkPos(chunkX, chunkZ),
+         record.minY(),
+         record.maxY(),
+         record.terrainSurfaces(),
+         record.waterSurfaces(),
+         record.waterFlags(),
+         new int[CHUNK_AREA],
+         new int[CHUNK_AREA],
+         new int[CHUNK_AREA],
+         record.oceanFlags(),
+         newBiomeCache(CHUNK_AREA),
+         new EarthChunkGenerator.TerrainWarmupTicket(0, 0, 0, false, false),
+         generationStamp
+      );
+      this.terrainGenerationStamps.put(chunkKey, generationStamp);
+      this.terrainRefinementManager.schedule(this, shell);
    }
 
    public void discardPreparedChunkState(ChunkPos pos) {
@@ -1046,6 +1146,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       boolean terrainShellMode = this.usesDeferredTerrainRefinement() && !this.shouldForceExactSpawnTerrain(pos);
       boolean thinShellTerrain = this.settings.usesTerrainShell();
       this.discardPreparedChunkState(chunkKey);
+      // The chunk is generated afresh (it was deleted, say), so a shell recorded here earlier no longer exists.
+      PendingTerrainRefinementStore pendingRefinements = this.pendingRefinementStore;
+      if (pendingRefinements != null) {
+         pendingRefinements.discard(chunkKey);
+      }
       if (terrainShellMode) {
          this.terrainGenerationStamps.put(chunkKey, generationStamp);
       } else {
@@ -1274,6 +1379,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
             warmupTicket,
             generationStamp
          );
+         this.recordPendingTerrainRefinement(shellResult);
          this.terrainRefinementManager.schedule(this, shellResult);
          endFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_DETAIL_SCHEDULE, phaseStartNs);
       } else if (this.hasDeferredApplyWork()) {
@@ -6979,6 +7085,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    public void processDeferredChunkDetailTick(ServerLevel level) {
       this.reapStalePreparedChunkState(level.getGameTime());
       // Not only in deferred mode: chunks built while coastline or elevation data was unavailable are refined too.
+      this.restorePendingTerrainRefinements(level);
       this.terrainRefinementManager.applyReady(level, this, TERRAIN_REFINEMENT_APPLY_BUDGET_PER_TICK);
 
       if (this.usesDeferredChunkDetails()) {
@@ -7424,6 +7531,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       // Last, as in applyBiomeDecoration, so the landmark wins over trees and lamps.
       this.placeLandmarks(level, chunk);
       this.terrainGenerationStamps.remove(chunkKey, refinement.generationStamp());
+      PendingTerrainRefinementStore pendingRefinements = this.pendingRefinementStore;
+      if (pendingRefinements != null) {
+         pendingRefinements.discard(chunkKey);
+      }
       // The patch wrote straight into the loaded chunk, so players who already received it would keep the shell.
       List<ServerPlayer> players = level.getChunkSource().chunkMap.getPlayers(chunk.getPos(), false);
       if (!players.isEmpty()) {
@@ -13515,9 +13626,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       }
 
       private boolean hasPending(ChunkPos pos) {
-         EarthChunkGenerator.TerrainRefinementJob job = this.jobs.get(
-            MinecraftVersionCompat.packChunkPos(MinecraftVersionCompat.chunkX(pos), MinecraftVersionCompat.chunkZ(pos))
-         );
+         return this.hasPending(MinecraftVersionCompat.packChunkPos(MinecraftVersionCompat.chunkX(pos), MinecraftVersionCompat.chunkZ(pos)));
+      }
+
+      private boolean hasPending(long chunkKey) {
+         EarthChunkGenerator.TerrainRefinementJob job = this.jobs.get(chunkKey);
          return job != null && job.state != EarthChunkGenerator.TerrainRefinementJobState.APPLIED && job.state != EarthChunkGenerator.TerrainRefinementJobState.FAILED;
       }
 

@@ -1,6 +1,8 @@
 package com.yucareux.tellus.worldgen;
 
 import com.yucareux.tellus.Tellus;
+import com.yucareux.tellus.cache.TellusCacheDomain;
+import com.yucareux.tellus.cache.TellusCacheRegistry;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainNetworkPolicy;
 import com.yucareux.tellus.preload.TerrainPreloadPackage;
 import com.yucareux.tellus.preload.TerrainPreloadPackageRegistry;
@@ -110,6 +112,26 @@ public final class TellusWorldgenSources {
 
    public static TellusOsmWaterSource osmWater() {
       return OSM_WATER;
+   }
+
+   /**
+    * Points every Overture-backed source at the archives of the release now in use and drops what was read from
+    * another release, so a world never mixes two releases. Sources already on that release are left alone.
+    */
+   public static void rebindOvertureSources() {
+      // Non-short-circuit: every source rebinds.
+      boolean osmChanged = OSM_ROADS.rebindOvertureArchive()
+         | OSM_INFRASTRUCTURE.rebindOvertureArchive()
+         | OSM_BUILDINGS.rebindOvertureArchive()
+         | OSM_WATER.rebindOvertureArchive()
+         | OSM_SAND.rebindOvertureArchive();
+      boolean landCoverChanged = LAND_COVER.rebindOvertureArchive();
+      if (osmChanged) {
+         TellusCacheRegistry.clear(TellusCacheDomain.OSM);
+      }
+      if (landCoverChanged) {
+         TellusCacheRegistry.clear(TellusCacheDomain.LAND_COVER);
+      }
    }
 
    public static WaterSurfaceResolver previewWaterResolver(EarthGeneratorSettings settings) {
