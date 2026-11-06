@@ -1304,14 +1304,25 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          endFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_BUILDING_TERRAIN, phaseStartNs);
       }
       this.applyLandmarkGroundToTerrain(pos, terrainSurfaces, waterSurfaces, waterFlags, chunkMinY, chunkMaxY - 1);
-      int[] terrainShellBedrockSkinTopYs = thinShellTerrain
-         ? this.computeTerrainShellBedrockSkinTopYs(
-            terrainSurfaces, heightGrid, gridSize, step, chunkMinY, chunkMaxY - 1
+      EarthChunkGenerator.TerrainShellNeighborRing terrainShellNeighborRing = thinShellTerrain
+         ? this.resolveTerrainShellNeighborRing(
+            pos,
+            heightGrid,
+            gridSize,
+            step,
+            chunkMinY,
+            chunkMaxY - 1,
+            oceanUnresolved ? EarthChunkGenerator.TerrainShellNeighborWater.RAW : EarthChunkGenerator.TerrainShellNeighborWater.FIRST_FILL
          )
          : null;
-      int[] terrainShellBedrockCurtainBottomYs = thinShellTerrain
-         ? this.computeTerrainShellBedrockCurtainBottomYs(
-            terrainSurfaces, heightGrid, gridSize, step, chunkMinY, chunkMaxY - 1
+      int[] terrainShellBedrockSkinTopYs = terrainShellNeighborRing != null
+         ? TerrainShellBedrockProtection.sideSkinTopYs(
+            terrainSurfaces, terrainShellNeighborRing.surfaces(), this.settings.undergroundDepth(), chunkMinY, chunkMaxY - 1
+         )
+         : null;
+      int[] terrainShellBedrockCurtainBottomYs = terrainShellNeighborRing != null
+         ? TerrainShellBedrockProtection.voidCurtainBottomYs(
+            terrainSurfaces, terrainShellNeighborRing.surfaces(), this.settings.undergroundDepth(), chunkMinY, chunkMaxY - 1
          )
          : null;
       int[] slopeDiffs = new int[CHUNK_AREA];
@@ -1366,7 +1377,13 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          this.terrainGenerationStamps.put(chunkKey, generationStamp);
          Tellus.LOGGER.debug("Deferring {} until its elevation tiles download", pos);
       }
-      if (terrainShellMode || oceanUnresolved || elevationUnresolved) {
+      // The bedrock along an edge was sealed against raw surfaces; refine it once the neighbour's coastline arrives.
+      boolean edgeWaterUnresolved = !oceanUnresolved && terrainShellNeighborRing != null && terrainShellNeighborRing.waterUnresolved();
+      if (edgeWaterUnresolved) {
+         this.terrainGenerationStamps.put(chunkKey, generationStamp);
+         Tellus.LOGGER.debug("Deferring the edges of {} until the coastline beyond them resolves", pos);
+      }
+      if (terrainShellMode || oceanUnresolved || elevationUnresolved || edgeWaterUnresolved) {
          phaseStartNs = beginFullChunkProfiling();
          EarthChunkGenerator.TerrainShellBuildResult shellResult = EarthChunkGenerator.TerrainShellBuildResult.capture(
             pos,
@@ -5364,120 +5381,77 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       return TerrainShellBedrockProtection.supportBottomY(surface, this.settings.undergroundDepth(), chunkMinY);
    }
 
-   private int[] computeTerrainShellBedrockSkinTopYs(
-      int[] terrainSurfaces,
-      int[] heightGrid,
-      int gridSize,
-      int step,
-      int chunkMinY,
-      int chunkMaxY
+   /**
+    * Resolves the surfaces of the columns just outside a chunk the way the neighbouring chunks resolve their own
+    * edge columns, for the bedrock that seals the terrain shell's sides. The raw elevation of the height grid was used
+    * here before, but under water a chunk builds on the resolved floor instead (the ocean floor is refitted from
+    * bathymetry to the world's depth), so the two sides of a chunk border disagreed on each other's shell bottom and
+    * raised bedrock walls, or left gaps, along it. A world floor at or above sea level minus the underground depth
+    * (Y -192 by default) clamps every such bottom to the floor and hid the disagreement.
+    *
+    * <p>A refinement rethrows missing coastline coverage so it is retried; a first fill keeps the raw surfaces on that
+    * edge and reports it, so the chunk can be refined once the coverage arrives.
+    */
+   private EarthChunkGenerator.TerrainShellNeighborRing resolveTerrainShellNeighborRing(
+      ChunkPos pos, int[] heightGrid, int gridSize, int step, int minY, int maxY, EarthChunkGenerator.TerrainShellNeighborWater water
    ) {
-      int[] result = new int[CHUNK_AREA];
+      int[] surfaces = new int[TerrainShellBedrockProtection.NEIGHBOR_RING_SIZE];
+      boolean waterUnresolved = false;
+      int chunkX = MinecraftVersionCompat.chunkX(pos);
+      int chunkZ = MinecraftVersionCompat.chunkZ(pos);
 
-      for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-         for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-            int index = chunkIndex(localX, localZ);
-            int supportBottomY = TerrainShellBedrockProtection.supportBottomY(
-               terrainSurfaces[index], this.settings.undergroundDepth(), chunkMinY
-            );
-            int gridIndex = (localZ + step) * gridSize + localX + step;
-            int highestNeighborSupportBottomY = Integer.MIN_VALUE;
-            highestNeighborSupportBottomY = Math.max(
-               highestNeighborSupportBottomY,
-               this.terrainShellNeighborSupportBottomY(localX - 1, localZ, gridIndex - 1, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            highestNeighborSupportBottomY = Math.max(
-               highestNeighborSupportBottomY,
-               this.terrainShellNeighborSupportBottomY(localX + 1, localZ, gridIndex + 1, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            highestNeighborSupportBottomY = Math.max(
-               highestNeighborSupportBottomY,
-               this.terrainShellNeighborSupportBottomY(localX, localZ - 1, gridIndex - gridSize, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            highestNeighborSupportBottomY = Math.max(
-               highestNeighborSupportBottomY,
-               this.terrainShellNeighborSupportBottomY(localX, localZ + 1, gridIndex + gridSize, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            result[index] = TerrainShellBedrockProtection.sideSkinTopY(
-               supportBottomY, Mth.clamp(terrainSurfaces[index], chunkMinY, chunkMaxY), highestNeighborSupportBottomY
-            );
+      for (int side = 0; side < 4; side++) {
+         int offsetX = side == 0 ? -1 : side == 1 ? 1 : 0;
+         int offsetZ = side == 2 ? -1 : side == 3 ? 1 : 0;
+         WaterSurfaceResolver.WaterChunkData neighborWater = null;
+         try {
+            // The same calls the neighbour makes for itself (resolveChunkWaterData / buildExactWaterChunkData).
+            neighborWater = switch (water) {
+               case RAW -> null;
+               case FIRST_FILL -> this.waterResolver.resolveChunkWaterData(chunkX + offsetX, chunkZ + offsetZ);
+               case REFINEMENT -> this.waterResolver.resolveChunkWaterDataExact(chunkX + offsetX, chunkZ + offsetZ);
+            };
+         } catch (OceanCoverageUnavailableException error) {
+            if (water == EarthChunkGenerator.TerrainShellNeighborWater.REFINEMENT) {
+               throw error;
+            }
+            waterUnresolved = true;
+         } catch (RuntimeException error) {
+            // The neighbour reports this failure itself when it generates.
+            Tellus.LOGGER.debug("Sealing the terrain shell of {} without the water beyond its edge", pos, error);
+         }
+         if (neighborWater != null && neighborWater.approximate()) {
+            // Only the legacy dry fallback is approximate, and it builds on the raw surfaces.
+            neighborWater = null;
+         }
+
+         for (int i = 0; i < CHUNK_SIDE; i++) {
+            int localX = offsetX < 0 ? -1 : offsetX > 0 ? CHUNK_SIDE : i;
+            int localZ = offsetZ < 0 ? -1 : offsetZ > 0 ? CHUNK_SIDE : i;
+            int rawSurface = heightGrid[(localZ + step) * gridSize + localX + step];
+            int ringIndex = switch (side) {
+               case 0 -> TerrainShellBedrockProtection.westRingIndex(i);
+               case 1 -> TerrainShellBedrockProtection.eastRingIndex(i);
+               case 2 -> TerrainShellBedrockProtection.northRingIndex(i);
+               default -> TerrainShellBedrockProtection.southRingIndex(i);
+            };
+            surfaces[ringIndex] = neighborWater != null
+               ? neighborWater.resolvedTerrainSurface(localX & CHUNK_MASK, localZ & CHUNK_MASK, rawSurface, minY, maxY)
+               : rawSurface;
          }
       }
 
-      return result;
+      return new EarthChunkGenerator.TerrainShellNeighborRing(surfaces, waterUnresolved);
    }
 
-   private int[] computeTerrainShellBedrockCurtainBottomYs(
-      int[] terrainSurfaces,
-      int[] heightGrid,
-      int gridSize,
-      int step,
-      int chunkMinY,
-      int chunkMaxY
-   ) {
-      int[] result = new int[CHUNK_AREA];
-
-      for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-         for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-            int index = chunkIndex(localX, localZ);
-            int supportBottomY = TerrainShellBedrockProtection.supportBottomY(
-               terrainSurfaces[index], this.settings.undergroundDepth(), chunkMinY
-            );
-            int gridIndex = (localZ + step) * gridSize + localX + step;
-            int lowestNeighborSurfaceY = Integer.MAX_VALUE;
-            lowestNeighborSurfaceY = Math.min(
-               lowestNeighborSurfaceY,
-               this.terrainShellNeighborSurfaceY(localX - 1, localZ, gridIndex - 1, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            lowestNeighborSurfaceY = Math.min(
-               lowestNeighborSurfaceY,
-               this.terrainShellNeighborSurfaceY(localX + 1, localZ, gridIndex + 1, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            lowestNeighborSurfaceY = Math.min(
-               lowestNeighborSurfaceY,
-               this.terrainShellNeighborSurfaceY(localX, localZ - 1, gridIndex - gridSize, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            lowestNeighborSurfaceY = Math.min(
-               lowestNeighborSurfaceY,
-               this.terrainShellNeighborSurfaceY(localX, localZ + 1, gridIndex + gridSize, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY)
-            );
-            result[index] = TerrainShellBedrockProtection.voidCurtainBottomY(
-               supportBottomY, chunkMinY, lowestNeighborSurfaceY
-            );
-         }
-      }
-
-      return result;
+   private record TerrainShellNeighborRing(int[] surfaces, boolean waterUnresolved) {
    }
 
-   private int terrainShellNeighborSupportBottomY(
-      int localX,
-      int localZ,
-      int gridIndex,
-      int[] terrainSurfaces,
-      int[] heightGrid,
-      int chunkMinY,
-      int chunkMaxY
-   ) {
-      int surface = this.terrainShellNeighborSurfaceY(
-         localX, localZ, gridIndex, terrainSurfaces, heightGrid, chunkMinY, chunkMaxY
-      );
-      return TerrainShellBedrockProtection.supportBottomY(surface, this.settings.undergroundDepth(), chunkMinY);
-   }
-
-   private int terrainShellNeighborSurfaceY(
-      int localX,
-      int localZ,
-      int gridIndex,
-      int[] terrainSurfaces,
-      int[] heightGrid,
-      int chunkMinY,
-      int chunkMaxY
-   ) {
-      int surface = localX >= 0 && localX < CHUNK_SIDE && localZ >= 0 && localZ < CHUNK_SIDE
-         ? terrainSurfaces[chunkIndex(localX, localZ)]
-         : heightGrid[gridIndex];
-      return Mth.clamp(surface, chunkMinY, chunkMaxY);
+   private enum TerrainShellNeighborWater {
+      /** The raw surfaces, for a chunk refined later anyway because its own coastline is missing. */
+      RAW,
+      FIRST_FILL,
+      REFINEMENT
    }
 
    private void applyTerrainShellBedrockSkin(
@@ -5761,18 +5735,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
             return new EarthChunkGenerator.ColumnHeights(surface, waterSurface, hasWater);
          }
       } else {
-         int surface = Mth.clamp(cachedSurface == Integer.MIN_VALUE || waterData.isInlandBank(localX, localZ)
-            ? waterData.terrainSurface(localX, localZ) : cachedSurface, minY, maxY);
-         int waterSurface = Mth.clamp(waterData.waterSurface(localX, localZ), minY, maxY);
-         boolean hasWater = waterData.hasWater(localX, localZ);
-         int minimumTerrainY = hasWater && waterData.isOcean(localX, localZ)
-            ? Math.min(maxY, minY + WaterSurfaceResolver.oceanFloorSupportBlocks())
-            : minY;
-         return !hasWater
+         // The bedrock neighbour ring resolves the columns beyond a chunk's edge through the same call.
+         int surface = waterData.resolvedTerrainSurface(localX, localZ, cachedSurface, minY, maxY);
+         return !waterData.hasWater(localX, localZ)
             ? new EarthChunkGenerator.ColumnHeights(surface, surface, false)
-            : new EarthChunkGenerator.ColumnHeights(
-               Mth.clamp(waterData.terrainSurface(localX, localZ), minimumTerrainY, maxY), waterSurface, true
-            );
+            : new EarthChunkGenerator.ColumnHeights(surface, Mth.clamp(waterData.waterSurface(localX, localZ), minY, maxY), true);
       }
    }
 
@@ -7220,11 +7187,15 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
 	         terrainSurfaces, waterSurfaces, waterFlags, oceanFlags, coverClasses, heightGrid, gridSize, step, chunkMinY, shell.maxY(), exactWaterData
 	      );
       this.applyLandmarkGroundToTerrain(pos, terrainSurfaces, waterSurfaces, waterFlags, chunkMinY, shell.maxY());
-      int[] terrainShellBedrockSkinTopYs = this.computeTerrainShellBedrockSkinTopYs(
-         terrainSurfaces, heightGrid, gridSize, step, chunkMinY, shell.maxY()
+      int[] neighborSurfaces = this.resolveTerrainShellNeighborRing(
+         pos, heightGrid, gridSize, step, chunkMinY, shell.maxY(), EarthChunkGenerator.TerrainShellNeighborWater.REFINEMENT
+      )
+         .surfaces();
+      int[] terrainShellBedrockSkinTopYs = TerrainShellBedrockProtection.sideSkinTopYs(
+         terrainSurfaces, neighborSurfaces, this.settings.undergroundDepth(), chunkMinY, shell.maxY()
       );
-      int[] terrainShellBedrockCurtainBottomYs = this.computeTerrainShellBedrockCurtainBottomYs(
-         terrainSurfaces, heightGrid, gridSize, step, chunkMinY, shell.maxY()
+      int[] terrainShellBedrockCurtainBottomYs = TerrainShellBedrockProtection.voidCurtainBottomYs(
+         terrainSurfaces, neighborSurfaces, this.settings.undergroundDepth(), chunkMinY, shell.maxY()
       );
       EarthBiomeSource earthBiomeSource = this.biomeSource instanceof EarthBiomeSource typedEarthBiomeSource ? typedEarthBiomeSource : null;
       EarthChunkGenerator.ChunkBiomeClimateCache climateCache = FAST_FULL_CHUNK && earthBiomeSource != null
@@ -7664,6 +7635,18 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
             for (int y = rewriteBottom; y <= rewriteTop; y++) {
                cursor.set(worldX, y, worldZ);
                setChunkBlockStateDiscardingBlockEntity(chunk, cursor, AIR_STATE);
+            }
+
+            if (thinShellTerrain) {
+               // A shell curtain hangs below the bottom, out of the rewrite; only void lies under the shell, so the
+               // bedrock reaching down from it is that curtain. The refined one is written again below.
+               for (int y = rewriteBottom - 1; y >= chunkMinY; y--) {
+                  cursor.set(worldX, y, worldZ);
+                  if (!chunk.getBlockState(cursor).is(Blocks.BEDROCK)) {
+                     break;
+                  }
+                  setChunkBlockStateDiscardingBlockEntity(chunk, cursor, AIR_STATE);
+               }
             }
 
             if (thinShellTerrain) {

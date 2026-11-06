@@ -3,6 +3,7 @@ package com.yucareux.tellus.worldgen;
 import com.yucareux.tellus.world.data.mask.TellusLandMaskSource;
 import com.yucareux.tellus.world.data.osm.OsmWaterFeature;
 import com.yucareux.tellus.world.data.osm.OsmWaterKind;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -295,4 +296,22 @@ class WaterSurfaceResolverTest {
       assertFalse(WaterSurfaceResolver.isSourceConversionProtectedCell(true, true, true, false));
    }
 
+   @Test
+   void chunksBuildWaterColumnsOnTheResolvedFloorAndDryColumnsOnTheRawSurface() {
+      int[] terrain = new int[256];
+      int[] water = new int[256];
+      byte[] flags = new byte[256];
+      Arrays.fill(terrain, -300);
+      Arrays.fill(water, 63);
+      flags[0] = 2;
+      flags[1] = 1;
+      WaterSurfaceResolver.WaterChunkData data = WaterSurfaceResolver.WaterChunkData.fromArrays(terrain, water, flags, false);
+
+      // The fitted ocean floor, not the raw elevation the bedrock ring used to read beyond a chunk's edge.
+      assertEquals(-300, data.resolvedTerrainSurface(0, 0, 40, -640, 1_023));
+      assertEquals(-304 + WaterSurfaceResolver.oceanFloorSupportBlocks(), data.resolvedTerrainSurface(0, 0, 40, -304, 1_023));
+      assertEquals(-300, data.resolvedTerrainSurface(1, 0, 40, -640, 1_023));
+      assertEquals(40, data.resolvedTerrainSurface(2, 0, 40, -640, 1_023));
+      assertEquals(-300, data.resolvedTerrainSurface(2, 0, Integer.MIN_VALUE, -640, 1_023));
+   }
 }

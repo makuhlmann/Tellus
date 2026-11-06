@@ -4543,6 +4543,23 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          return this.inlandBanks[WaterSurfaceResolver.chunkIndex(localX, localZ)];
       }
 
+      /**
+       * The terrain surface a chunk builds this column from, given the raw elevation surface sampled for it: the
+       * resolved floor under water (an ocean floor kept a few blocks above the world floor) and on inland banks, the
+       * raw surface elsewhere. Mangrove columns are resolved separately by the chunk generator.
+       */
+      public int resolvedTerrainSurface(int localX, int localZ, int rawSurface, int minY, int maxY) {
+         int terrainSurface = this.terrainSurface(localX, localZ);
+         if (this.hasWater(localX, localZ)) {
+            int minimumTerrainY = this.isOcean(localX, localZ) ? Math.min(maxY, minY + oceanFloorSupportBlocks()) : minY;
+            return Mth.clamp(terrainSurface, minimumTerrainY, maxY);
+         }
+
+         return Mth.clamp(
+            rawSurface == Integer.MIN_VALUE || this.isInlandBank(localX, localZ) ? terrainSurface : rawSurface, minY, maxY
+         );
+      }
+
       public boolean approximate() {
          return this.approximate;
       }
