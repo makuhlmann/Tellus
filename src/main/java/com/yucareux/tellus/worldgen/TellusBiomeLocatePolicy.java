@@ -22,9 +22,10 @@ public final class TellusBiomeLocatePolicy {
    /**
     * Returns each quart-aligned cave-biome Y for a terrain column, ordered by
     * vertical distance from the command origin. Every result is guaranteed to
-    * remain inside Tellus's configured cave-biome shell.
+    * remain inside Tellus's configured cave-biome shell and above the world's
+    * floor, which cuts the shell short under low ground and the sea bed.
     */
-   public static List<Integer> caveBiomeQuartYs(int surfaceY, int undergroundDepth, int originY) {
+   public static List<Integer> caveBiomeQuartYs(int surfaceY, int undergroundDepth, int originY, int worldMinY) {
       int generationDepth = UndergroundGenerationDepthPolicy.generationDepth(undergroundDepth);
       if (generationDepth <= TellusCaveBiomeDepthPolicy.MIN_CAVE_BIOME_DEPTH) {
          return List.of();
@@ -34,7 +35,7 @@ public final class TellusBiomeLocatePolicy {
       for (int depth = TellusCaveBiomeDepthPolicy.MIN_CAVE_BIOME_DEPTH; depth < generationDepth; depth++) {
          int quartY = quartBlockY(surfaceY - depth);
          int representedDepth = surfaceY - quartY;
-         if (TellusCaveBiomeDepthPolicy.isCaveBiomeDepth(representedDepth, undergroundDepth)) {
+         if (quartY >= worldMinY && TellusCaveBiomeDepthPolicy.isCaveBiomeDepth(representedDepth, undergroundDepth)) {
             uniqueQuartYs.add(quartY);
          }
       }

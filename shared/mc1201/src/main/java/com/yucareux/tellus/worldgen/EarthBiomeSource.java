@@ -3,6 +3,7 @@ package com.yucareux.tellus.worldgen;
 import com.mojang.datafixers.util.Pair;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
+import com.yucareux.tellus.compat.MinecraftVersionCompat;
 import com.yucareux.tellus.world.data.biome.BiomeClassification;
 import com.yucareux.tellus.world.data.cover.TellusLandCoverSource;
 import com.yucareux.tellus.world.data.elevation.TellusElevationSource;
@@ -276,6 +277,7 @@ public final class EarthBiomeSource extends BiomeSource {
       }
 
       int horizontalStep = Math.max(1, horizontalInterval);
+      int worldMinY = level != null ? MinecraftVersionCompat.minY(level) : EarthGeneratorSettings.resolveHeightLimits(this.settings).minY();
       int horizontalRadius = Math.floorDiv(Math.max(0, radius), horizontalStep);
       for (BlockPos.MutableBlockPos offset : BlockPos.spiralAround(BlockPos.ZERO, horizontalRadius, Direction.EAST, Direction.SOUTH)) {
          int blockX = quartBlock(origin.getX() + offset.getX() * horizontalStep);
@@ -289,7 +291,9 @@ public final class EarthBiomeSource extends BiomeSource {
          long closestVerticalDistance = closestInColumn == null ? Long.MAX_VALUE : Math.abs((long)surfaceY - origin.getY());
 
          if (this.settings.caveGeneration()) {
-            for (int blockY : TellusBiomeLocatePolicy.caveBiomeQuartYs(surfaceY, this.settings.undergroundDepth(), origin.getY())) {
+            for (int blockY : TellusBiomeLocatePolicy.caveBiomeQuartYs(
+               surfaceY, this.settings.undergroundDepth(), origin.getY(), worldMinY
+            )) {
                Holder<Biome> biome = this.resolveBiomeForColumn(resolved, blockX, blockY, blockZ);
                if (!predicate.test(biome)) {
                   continue;

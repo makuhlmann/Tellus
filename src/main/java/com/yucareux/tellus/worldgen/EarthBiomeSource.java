@@ -311,6 +311,7 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       }
 
       int horizontalStep = Math.max(1, horizontalInterval);
+      int worldMinY = level != null ? MinecraftVersionCompat.minY(level) : EarthGeneratorSettings.resolveHeightLimits(this.settings).minY();
       int horizontalRadius = Math.floorDiv(Math.max(0, radius), horizontalStep);
       for (BlockPos.MutableBlockPos offset : BlockPos.spiralAround(BlockPos.ZERO, horizontalRadius, Direction.EAST, Direction.SOUTH)) {
          int blockX = quartBlock(origin.getX() + offset.getX() * horizontalStep);
@@ -324,7 +325,9 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
          long closestVerticalDistance = closestInColumn == null ? Long.MAX_VALUE : Math.abs((long)surfaceY - origin.getY());
 
          if (this.settings.caveGeneration()) {
-            for (int blockY : TellusBiomeLocatePolicy.caveBiomeQuartYs(surfaceY, this.settings.undergroundDepth(), origin.getY())) {
+            for (int blockY : TellusBiomeLocatePolicy.caveBiomeQuartYs(
+               surfaceY, this.settings.undergroundDepth(), origin.getY(), worldMinY
+            )) {
                Holder<Biome> biome = this.resolveBiomeForColumn(resolved, blockX, blockY, blockZ);
                if (!predicate.test(biome)) {
                   continue;
