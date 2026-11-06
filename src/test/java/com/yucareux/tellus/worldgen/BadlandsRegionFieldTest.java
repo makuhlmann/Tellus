@@ -51,6 +51,26 @@ class BadlandsRegionFieldTest {
    }
 
    @Test
+   void onlyDeepCanyonsAreErodedBadlands() {
+      int eroded = 0;
+      int kept = 0;
+      for (int z = 0; z < 256; z++) {
+         for (int x = 0; x < 256; x++) {
+            if (BadlandsRegionField.isErodedRelief(BadlandsTerrainPolicy.MIN_ERODED_RELIEF_METERS, x, z)) {
+               eroded++;
+            } else {
+               kept++;
+            }
+            // Canyon relief that just promotes scrub to badlands is never eroded.
+            assertFalse(BadlandsRegionField.isErodedRelief(BadlandsTerrainPolicy.MIN_CANYON_RELIEF_METERS * 1.25, x, z));
+         }
+      }
+      assertTrue(eroded > 0 && kept > 0, "relief at the threshold must fall on both sides of it");
+      assertTrue(BadlandsRegionField.isErodedRelief(BadlandsTerrainPolicy.MIN_ERODED_RELIEF_METERS * 1.25, 7, 11));
+      assertFalse(BadlandsRegionField.isErodedRelief(Double.NaN, 7, 11));
+   }
+
+   @Test
    void aVacantLotInATownIsNotABadlandsLandscape() {
       BadlandsRegionField field = new BadlandsRegionField(1.0);
       // A 30 m bare lot in the middle of built-up land.

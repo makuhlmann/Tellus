@@ -32,6 +32,7 @@ import net.minecraft.world.level.biome.BiomeResolver;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.biome.Climate.Sampler;
+import net.minecraft.world.level.chunk.ChunkAccess;
 
 public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    public static final MapCodec<EarthBiomeSource> CODEC = RecordCodecBuilder.mapCodec(
@@ -57,6 +58,14 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    private static final int DEEP_DARK_Y_GRID = 48;
    private static final int STRUCTURE_BIOME_PROBE_CEILING_ABOVE_MIN_Y = 64;
    private static final double MAX_CAVE_BIOME_CHANCE = 0.55;
+   // About 5% of eligible depth just below the minimum and 18% at the floor of the shell, after
+   // 28% to 50% made the Deep Dark the commonest thing underground.
+   private static final double DEEP_DARK_BASE_CHANCE = 0.04;
+   private static final double DEEP_DARK_DEPTH_CHANCE = 0.14;
+   // Weighed against Lush and Dripstone Caves, whose weights sum to roughly 0.45: one cave biome in ten.
+   private static final int SULFUR_CAVES_MIN_DEPTH = 32;
+   private static final double SULFUR_CAVES_BASE_WEIGHT = 0.03;
+   private static final double SULFUR_CAVES_DEPTH_WEIGHT = 0.04;
    private static final double DEEP_OCEAN_DEPTH_METERS = 200.0;
    private static final double FROZEN_OCEAN_SST_C = -1.5;
    private static final double FROZEN_OCEAN_ICE_FRACTION = 0.15;
@@ -67,9 +76,15 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    private static final int CHERRY_GROVE_GRID_BLOCKS = 448;
    private static final int DAPPLED_FOREST_GRID_BLOCKS = 32;
    private static final int DAPPLED_FOREST_DETAIL_GRID_BLOCKS = 11;
+   private static final int PALE_GARDEN_GRID_BLOCKS = 256;
+   private static final int MUSHROOM_FIELDS_GRID_BLOCKS = 192;
    private static final double SUNFLOWER_PLAINS_NOISE_THRESHOLD = 0.72;
    private static final double FLOWER_FOREST_NOISE_THRESHOLD = 0.72;
-   private static final double CHERRY_GROVE_NOISE_THRESHOLD = 0.78;
+   // Groves in about 3% of the hill forest that suits them; 0.78 gave 11%.
+   private static final double CHERRY_GROVE_NOISE_THRESHOLD = 0.88;
+   // About 4.5% and 2.3% of Dark Forest.
+   private static final double PALE_GARDEN_NOISE_THRESHOLD = 0.86;
+   private static final double MUSHROOM_FIELDS_NOISE_THRESHOLD = 0.90;
    private static final double DAPPLED_FOREST_NOISE_THRESHOLD = 0.45;
    private static final double CHERRY_GROVE_MIN_ELEVATION_METERS = 180.0;
    private static final double CHERRY_GROVE_MAX_ELEVATION_METERS = 1800.0;
@@ -81,8 +96,13 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    private static final long CHERRY_GROVE_NOISE_SALT = 7999243172794174439L;
    private static final long DAPPLED_FOREST_NOISE_SALT = 843186567711051837L;
    private static final long DAPPLED_FOREST_DETAIL_NOISE_SALT = -6070240617245934207L;
+   private static final long PALE_GARDEN_NOISE_SALT = 3419547702380419721L;
+   private static final long MUSHROOM_FIELDS_NOISE_SALT = -7741861206348927453L;
    // Looked up by id because only 26.3 registers it.
    private static final ResourceKey<Biome> DAPPLED_FOREST = BiomeClassification.toBiomeKey("dappled_forest");
+   // Looked up by id because only 1.21.11 and later register them, and Sulfur Caves only 26.2 and later.
+   private static final ResourceKey<Biome> PALE_GARDEN = BiomeClassification.toBiomeKey("pale_garden");
+   private static final ResourceKey<Biome> SULFUR_CAVES = BiomeClassification.toBiomeKey("sulfur_caves");
    private static final TellusLandCoverSource LAND_COVER_SOURCE = TellusWorldgenSources.landCover();
    private static final TellusElevationSource ELEVATION_SOURCE = TellusWorldgenSources.elevation();
    private static final TellusKoppenSource KOPPEN_SOURCE = TellusWorldgenSources.koppen();
@@ -103,7 +123,11 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    private final Holder<Biome> cherryGrove;
 
    private final Holder<Biome> dappledForest;
-   
+
+   private final Holder<Biome> paleGarden;
+
+   private final Holder<Biome> mushroomFields;
+
    private final Holder<Biome> ocean;
 
    private final Holder<Biome> warmOcean;
@@ -123,7 +147,15 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    private final Holder<Biome> deepFrozenOcean;
    
    private final Holder<Biome> river;
-   
+
+   private final Holder<Biome> frozenRiver;
+
+   private final Holder<Biome> beach;
+
+   private final Holder<Biome> snowyBeach;
+
+   private final Holder<Biome> erodedBadlands;
+
    private final Holder<Biome> frozenPeaks;
 
    private final Holder<Biome> snowySlopes;
@@ -137,7 +169,9 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
    private final Holder<Biome> dripstoneCaves;
    
    private final Holder<Biome> deepDark;
-   
+
+   private final Holder<Biome> sulfurCaves;
+
    private final WaterSurfaceResolver waterResolver;
    private final AntarcticSnowPolicy antarcticSnowPolicy;
    private final RandomBiomeMixer randomBiomeMixer;
@@ -162,6 +196,10 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       this.dappledForest = MinecraftVersionCompat.defaultRandomBiomeIds().contains("dappled_forest")
          ? this.resolveOptionalBiome(DAPPLED_FOREST)
          : null;
+      this.paleGarden = MinecraftVersionCompat.defaultRandomBiomeIds().contains("pale_garden")
+         ? this.resolveOptionalBiome(PALE_GARDEN)
+         : null;
+      this.mushroomFields = this.resolveBiome(Biomes.MUSHROOM_FIELDS, this.plains);
       this.ocean = this.resolveBiome(Biomes.OCEAN, this.plains);
       this.warmOcean = this.resolveBiome(Biomes.WARM_OCEAN, this.ocean);
       this.lukewarmOcean = this.resolveBiome(Biomes.LUKEWARM_OCEAN, this.ocean);
@@ -172,6 +210,10 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       this.deepColdOcean = this.resolveBiome(Biomes.DEEP_COLD_OCEAN, this.deepOcean);
       this.deepFrozenOcean = this.resolveBiome(Biomes.DEEP_FROZEN_OCEAN, this.deepOcean);
       this.river = this.resolveBiome(Biomes.RIVER, this.plains);
+      this.frozenRiver = this.resolveBiome(Biomes.FROZEN_RIVER, this.river);
+      this.beach = this.resolveBiome(Biomes.BEACH, this.plains);
+      this.snowyBeach = this.resolveBiome(Biomes.SNOWY_BEACH, this.beach);
+      this.erodedBadlands = this.resolveBiome(Biomes.ERODED_BADLANDS, this.plains);
       this.frozenPeaks = this.resolveBiome(Biomes.FROZEN_PEAKS, this.plains);
       this.snowySlopes = this.resolveBiome(Biomes.SNOWY_SLOPES, this.frozenPeaks);
       this.jaggedPeaks = this.resolveBiome(Biomes.JAGGED_PEAKS, this.frozenPeaks);
@@ -179,6 +221,9 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       this.lushCaves = this.resolveOptionalBiome(Biomes.LUSH_CAVES);
       this.dripstoneCaves = this.resolveOptionalBiome(Biomes.DRIPSTONE_CAVES);
       this.deepDark = this.resolveOptionalBiome(Biomes.DEEP_DARK);
+      this.sulfurCaves = MinecraftVersionCompat.defaultRandomBiomeIds().contains("sulfur_caves")
+         ? this.resolveOptionalBiome(SULFUR_CAVES)
+         : null;
       this.waterResolver = TellusWorldgenSources.waterResolver(this.settings);
       this.antarcticSnowPolicy = AntarcticSnowPolicy.forWorldScale(this.settings.worldScale());
       this.badlandsRegion = new BadlandsRegionField(this.settings.worldScale());
@@ -432,13 +477,13 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
             ? column
             : this.waterResolver.resolveFastColumnData(blockX, blockZ, rawCoverClass);
          if (waterColumn.hasWater()) {
-            return waterColumn.isOcean() ? this.resolveOceanBiome(blockX, blockZ, waterColumn) : this.applyRandomRiverBiome(blockX, blockZ);
+            return waterColumn.isOcean() ? this.resolveOceanBiome(blockX, blockZ, waterColumn) : this.resolveRiverBiome(blockX, blockZ);
          }
          visualCoverClass = this.resolveDryOsmVisualCoverClass(blockX, blockZ, rawCoverClass, visualCoverClass);
       } else if (rawCoverClass == ESA_NO_DATA || rawCoverClass == ESA_WATER) {
          WaterSurfaceResolver.WaterColumnData waterColumn = column != null ? column : this.waterResolver.resolveColumnData(blockX, blockZ, rawCoverClass);
          if (waterColumn.hasWater()) {
-            return waterColumn.isOcean() ? this.resolveOceanBiome(blockX, blockZ, waterColumn) : this.applyRandomRiverBiome(blockX, blockZ);
+            return waterColumn.isOcean() ? this.resolveOceanBiome(blockX, blockZ, waterColumn) : this.resolveRiverBiome(blockX, blockZ);
          }
       }
       return this.resolveSurfaceBiomeAfterWater(blockX, blockZ, rawCoverClass, visualCoverClass, precomputedKoppen);
@@ -466,7 +511,7 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
          return this.mangrove;
       }
       if ((this.settings.enableWater() || rawCoverClass == ESA_NO_DATA || rawCoverClass == ESA_WATER) && hasWater) {
-         return isOcean ? this.resolveOceanBiome(blockX, blockZ, null, previewResolutionMeters) : this.applyRandomRiverBiome(blockX, blockZ);
+         return isOcean ? this.resolveOceanBiome(blockX, blockZ, null, previewResolutionMeters) : this.resolveRiverBiome(blockX, blockZ);
       }
       if (this.settings.enableWater() && !hasWater) {
          visualCoverClass = this.resolveDryOsmVisualCoverClass(blockX, blockZ, rawCoverClass, visualCoverClass);
@@ -605,8 +650,14 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
          }
       }
 
+      // The real terrain carries no hoodoos, so Eroded Badlands names the deepest-cut canyon country.
+      if (Biomes.BADLANDS.equals(biomeKey)
+         && BadlandsRegionField.isErodedRelief(this.sampleRegionalReliefMeters(blockX, blockZ, previewResolutionMeters), blockX, blockZ)) {
+         biomeKey = Biomes.ERODED_BADLANDS;
+      }
+
       Holder<Biome> biome = biomeKey == null ? this.plains : this.resolveBiome(biomeKey, this.plains);
-      biome = this.applyRareBiomeVariants(biome, blockX, blockZ, visualCoverClass, koppen);
+      biome = this.applyRareBiomeVariants(biome, blockX, blockZ, visualCoverClass, koppen, previewResolutionMeters);
       return this.applyRandomLandBiome(biome, blockX, blockZ, koppen);
    }
 
@@ -618,19 +669,77 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       return this.settings.randomBiomes() ? this.randomBiomeMixer.mixOcean(base, blockX, blockZ, deep) : base;
    }
 
-   private Holder<Biome> applyRandomRiverBiome(int blockX, int blockZ) {
-      return this.settings.randomBiomes() ? this.randomBiomeMixer.mixRiver(this.river, blockX, blockZ) : this.river;
+   private Holder<Biome> resolveRiverBiome(int blockX, int blockZ) {
+      Holder<Biome> river = this.isFrozenRiverClimate(blockX, blockZ) ? this.frozenRiver : this.river;
+      return this.settings.randomBiomes() ? this.randomBiomeMixer.mixRiver(river, blockX, blockZ) : river;
    }
 
-   private Holder<Biome> applyRareBiomeVariants(Holder<Biome> biome, int blockX, int blockZ, int visualCoverClass, String koppen) {
+   /**
+    * Rivers and lakes in the climates whose forests RESOLVE maps to Snowy Taiga: tundra, ice cap and
+    * the subarctic climates with a short summer (D?c, D?d). The smoothed climate keeps a river from
+    * flickering between frozen and open along its course.
+    */
+   private boolean isFrozenRiverClimate(int blockX, int blockZ) {
+      String koppen = KOPPEN_SOURCE.sampleCoherentCode(blockX, blockZ, this.settings.worldScale());
+      if (koppen == null) {
+         koppen = KOPPEN_SOURCE.findNearestCode(blockX, blockZ, this.settings.worldScale());
+      }
+      return isFrozenRiverClimate(koppen);
+   }
+
+   /** Beach for a sandy ocean shore, or Snowy Beach in the climates whose rivers freeze. */
+   Holder<Biome> sandyShoreBiome(int blockX, int blockZ) {
+      return this.isFrozenRiverClimate(blockX, blockZ) ? this.snowyBeach : this.beach;
+   }
+
+   /**
+    * Keeps a chunk's stored biomes but for its shore quart columns, which store {@code quartBiomes}
+    * from {@code floorYs} up. Indices run over the chunk's 4x4 quart columns, row by row.
+    */
+   BiomeResolver sandyShoreResolver(ChunkAccess chunk, Holder<Biome>[] quartBiomes, int[] floorYs) {
+      int minQuartX = QuartPos.fromBlock(chunk.getPos().getMinBlockX());
+      int minQuartZ = QuartPos.fromBlock(chunk.getPos().getMinBlockZ());
+      return this.chunkResolver((quartX, quartY, quartZ) -> {
+         int localX = quartX - minQuartX;
+         int localZ = quartZ - minQuartZ;
+         int index = localZ * 4 + localX;
+         // The section copies its biomes before filling, so the old ones are still readable here.
+         return localX >= 0 && localX < 4 && localZ >= 0 && localZ < 4 && quartBiomes[index] != null
+               && QuartPos.toBlock(quartY) >= floorYs[index]
+            ? quartBiomes[index]
+            : chunk.getNoiseBiome(quartX, quartY, quartZ);
+      });
+   }
+
+   static boolean isFrozenRiverClimate(String koppen) {
+      if (koppen == null) {
+         return false;
+      }
+      String normalized = koppen.toUpperCase(Locale.ROOT);
+      return normalized.equals("ET")
+         || normalized.equals("EF")
+         || normalized.length() == 3 && normalized.charAt(0) == 'D' && (normalized.charAt(2) == 'C' || normalized.charAt(2) == 'D');
+   }
+
+   private Holder<Biome> applyRareBiomeVariants(
+      Holder<Biome> biome, int blockX, int blockZ, int visualCoverClass, String koppen, double previewResolutionMeters
+   ) {
       if (koppen == null) {
          return biome;
       }
 
       String normalizedKoppen = koppen.toUpperCase(Locale.ROOT);
       if (visualCoverClass == ESA_TREE_COVER && isTemperateForestBiome(biome)) {
-         if (this.isCherryGroveCandidate(blockX, blockZ, normalizedKoppen)) {
+         if (this.isCherryGroveCandidate(blockX, blockZ, normalizedKoppen, previewResolutionMeters)) {
             return this.cherryGrove;
+         } else if (this.paleGarden != null
+            && biome.is(Biomes.DARK_FOREST)
+            && sampleValueNoise(blockX, blockZ, PALE_GARDEN_GRID_BLOCKS, PALE_GARDEN_NOISE_SALT) >= PALE_GARDEN_NOISE_THRESHOLD) {
+            // Pale Garden and Mushroom Fields before Flower Forest, which takes part of every Dark Forest.
+            return this.paleGarden;
+         } else if (biome.is(Biomes.DARK_FOREST)
+            && sampleValueNoise(blockX, blockZ, MUSHROOM_FIELDS_GRID_BLOCKS, MUSHROOM_FIELDS_NOISE_SALT) >= MUSHROOM_FIELDS_NOISE_THRESHOLD) {
+            return this.mushroomFields;
          } else if (this.dappledForest != null && isDappledForestClimate(normalizedKoppen) && isDappledForestClump(blockX, blockZ)) {
             // Before Flower Forest, whose wide patches would otherwise stay plain green inside the mix.
             return this.dappledForest;
@@ -648,30 +757,29 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       return biome;
    }
 
-   private boolean isCherryGroveCandidate(int blockX, int blockZ, String koppen) {
-      return this.settings.randomBiomes()
-         && this.settings.randomBiomeIds().contains("cherry_grove")
-         && isCherryGroveClimate(koppen)
+   /** Noise first: only the few columns inside a grove pay for the elevation samples. */
+   private boolean isCherryGroveCandidate(int blockX, int blockZ, String koppen, double previewResolutionMeters) {
+      return isCherryGroveClimate(koppen)
          && sampleValueNoise(blockX, blockZ, CHERRY_GROVE_GRID_BLOCKS, CHERRY_GROVE_NOISE_SALT) >= CHERRY_GROVE_NOISE_THRESHOLD
-         && this.isCherryGroveTerrain(blockX, blockZ);
+         && this.isCherryGroveTerrain(blockX, blockZ, this.lodReliefResolutionMeters(previewResolutionMeters));
    }
 
-   private boolean isCherryGroveTerrain(int blockX, int blockZ) {
+   private boolean isCherryGroveTerrain(int blockX, int blockZ, double resolutionMeters) {
       double worldScale = this.settings.worldScale();
       if (worldScale <= 0.0) {
          return false;
       }
 
-      double center = ELEVATION_SOURCE.sampleElevationMeters(blockX, blockZ, worldScale, false, this.settings.demSelection());
+      double center = this.sampleReliefElevationMeters(blockX, blockZ, resolutionMeters);
       if (!Double.isFinite(center) || center < CHERRY_GROVE_MIN_ELEVATION_METERS || center > CHERRY_GROVE_MAX_ELEVATION_METERS) {
          return false;
       }
 
       int sampleOffset = Math.max(4, Mth.ceil(CHERRY_GROVE_RELIEF_SAMPLE_METERS / Math.max(1.0, worldScale)));
-      double east = ELEVATION_SOURCE.sampleElevationMeters(blockX + sampleOffset, blockZ, worldScale, false, this.settings.demSelection());
-      double west = ELEVATION_SOURCE.sampleElevationMeters(blockX - sampleOffset, blockZ, worldScale, false, this.settings.demSelection());
-      double south = ELEVATION_SOURCE.sampleElevationMeters(blockX, blockZ + sampleOffset, worldScale, false, this.settings.demSelection());
-      double north = ELEVATION_SOURCE.sampleElevationMeters(blockX, blockZ - sampleOffset, worldScale, false, this.settings.demSelection());
+      double east = this.sampleReliefElevationMeters(blockX + sampleOffset, blockZ, resolutionMeters);
+      double west = this.sampleReliefElevationMeters(blockX - sampleOffset, blockZ, resolutionMeters);
+      double south = this.sampleReliefElevationMeters(blockX, blockZ + sampleOffset, resolutionMeters);
+      double north = this.sampleReliefElevationMeters(blockX, blockZ - sampleOffset, resolutionMeters);
       double min = center;
       double max = center;
       int samples = 1;
@@ -860,18 +968,26 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
       holders.add(this.deepColdOcean);
       holders.add(this.deepFrozenOcean);
       holders.add(this.river);
+      holders.add(this.frozenRiver);
+      // Stored by the chunk generator over sandy shores; decoration only runs features of declared biomes.
+      holders.add(this.beach);
+      holders.add(this.snowyBeach);
       holders.add(this.frozenPeaks);
       holders.add(this.snowySlopes);
       holders.add(this.jaggedPeaks);
       holders.add(this.mangrove);
+      holders.add(this.cherryGrove);
+      holders.add(this.mushroomFields);
+      holders.add(this.erodedBadlands);
       addIfPresent(holders, this.dappledForest);
+      addIfPresent(holders, this.paleGarden);
       if (this.settings.randomBiomes()) {
-         holders.add(this.cherryGrove);
          holders.addAll(this.randomBiomeMixer.possibleBiomes());
       }
       if (this.settings.caveGeneration()) {
          addIfPresent(holders, this.lushCaves);
          addIfPresent(holders, this.dripstoneCaves);
+         addIfPresent(holders, this.sulfurCaves);
          if (this.settings.deepDark()) {
             addIfPresent(holders, this.deepDark);
          }
@@ -907,13 +1023,18 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
          dripChance = 0.0;
       }
 
-      double total = lushChance + dripChance;
+      double sulfurChance = this.sulfurCaves != null && depth >= SULFUR_CAVES_MIN_DEPTH
+         ? SULFUR_CAVES_BASE_WEIGHT + depthFactor * SULFUR_CAVES_DEPTH_WEIGHT
+         : 0.0;
+      double total = lushChance + dripChance + sulfurChance;
       if (!(total <= 0.0) && !(noise > MAX_CAVE_BIOME_CHANCE)) {
          double pick = noise * total / MAX_CAVE_BIOME_CHANCE;
          if (lushCavesBiome != null && pick < lushChance) {
             return lushCavesBiome;
+         } else if (pick < lushChance + dripChance) {
+            return dripstoneCavesBiome != null ? dripstoneCavesBiome : surfaceBiome;
          } else {
-            return dripstoneCavesBiome != null && pick < lushChance + dripChance ? dripstoneCavesBiome : surfaceBiome;
+            return sulfurChance > 0.0 ? this.sulfurCaves : surfaceBiome;
          }
       } else {
          return surfaceBiome;
@@ -929,7 +1050,7 @@ public final class EarthBiomeSource extends TellusBiomeSourceBridge {
 
       double depthFactor = TellusCaveBiomeDepthPolicy.normalizedDepthFactor(depth, this.settings.undergroundDepth());
       double deepNoise = sampleCaveNoise(blockX, -depth, blockZ, DEEP_DARK_GRID, DEEP_DARK_Y_GRID);
-      return deepNoise < 0.28 + depthFactor * 0.22;
+      return deepNoise < DEEP_DARK_BASE_CHANCE + depthFactor * DEEP_DARK_DEPTH_CHANCE;
    }
 
    private static boolean isLushSurface(Holder<Biome> surfaceBiome) {

@@ -24,6 +24,8 @@ public final class BadlandsTerrainPolicy {
    public static final double CANYON_RELIEF_SAMPLE_METERS = 1600.0;
    public static final double CANYON_RELIEF_CELL_METERS = 800.0;
    public static final double MIN_CANYON_RELIEF_METERS = 120.0;
+   // Canyonlands-deep cuts, such as the Grand Canyon, Zion or the Atacama gorges, rather than South Dakota's Badlands.
+   public static final double MIN_ERODED_RELIEF_METERS = 360.0;
    private static final int MIN_CLIFF_BAND_DEPTH = 24;
    private static final int MAX_CLIFF_BAND_DEPTH = 65536;
    private static final int[] BAND_PATTERN = new int[]{

@@ -54,6 +54,7 @@ public final class BadlandsRegionField {
    static final double RELIEF_JITTER = 0.2;
    private static final long KEEP_SALT = 0x5A17B0C3D2E9F481L;
    private static final long RELIEF_SALT = -0x3C9E5B7A1F2D8461L;
+   private static final long ERODED_RELIEF_SALT = 0x6B2D94E1C7A3F058L;
    private static final int NO_CLASS = -1;
    private static final int ESA_BARE = 60;
    private static final int ESA_MOSS_LICHEN = 100;
@@ -179,6 +180,15 @@ public final class BadlandsRegionField {
       }
       double jitter = 1.0 + (SurfacePatchNoise.uniform(blockX, blockZ, RELIEF_SALT) - 0.5) * 2.0 * RELIEF_JITTER;
       return reliefMeters >= BadlandsTerrainPolicy.MIN_CANYON_RELIEF_METERS * jitter;
+   }
+
+   /** Whether badlands are cut deeply enough to name them Eroded Badlands, with the same organic border. */
+   public static boolean isErodedRelief(double reliefMeters, int blockX, int blockZ) {
+      if (!Double.isFinite(reliefMeters)) {
+         return false;
+      }
+      double jitter = 1.0 + (SurfacePatchNoise.uniform(blockX, blockZ, ERODED_RELIEF_SALT) - 0.5) * 2.0 * RELIEF_JITTER;
+      return reliefMeters >= BadlandsTerrainPolicy.MIN_ERODED_RELIEF_METERS * jitter;
    }
 
    private Support measureSupport(int blockX, int blockZ, double resolutionMeters, CoverSampler sampler) {

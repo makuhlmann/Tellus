@@ -4112,7 +4112,8 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
       if (chance <= 0) {
          return null;
       } else {
-         boolean useFullDetailAnchors = !profile.isMangrove();
+         // Full chunks keep the biome's own mangroves and huge mushrooms, not procedural trees.
+         boolean useFullDetailAnchors = !profile.isMangrove() && profile.treeFamily() != TellusLodGenerator.TreeLodFamily.MUSHROOM;
          int bestDist = Integer.MAX_VALUE;
          int bestRadius = 0;
          int bestHash = 0;

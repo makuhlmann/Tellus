@@ -172,6 +172,8 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    private static final int RANDOM_BIOME_TREE_CHANCE = 35;
    private static final int PROCEDURAL_TREE_CELL_SIZE = TellusProceduralTreeGenerator.PLACEMENT_CELL_SIZE;
    private static final long RANDOM_BIOME_TREE_SALT = -7163147898164839021L;
+   private static final int MUSHROOM_FIELDS_TREE_CHANCE = 35;
+   private static final long MUSHROOM_FIELDS_TREE_SALT = 5873466295011784417L;
    private static final int SPAGHETTI_WATER_GUARD_DEPTH = 4;
    private static final double OCEAN_CHUNK_CARVER_GUARD_RATIO = 0.7;
    private static final int OCEAN_CARVER_FLOOR_BUFFER = 3;
@@ -1343,6 +1345,8 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          random,
          null
       );
+      this.markSandyShoreBiomes(pos, terrainSurfaces, waterSurfaces, waterFlags, biomeCache, oceanBeachCache, earthBiomeSource);
+      this.storeSandyShoreBiomes(chunk, biomeCache, terrainSurfaces, random, earthBiomeSource);
       endFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_BIOME_CACHE, phaseStartNs);
       if (climateCache != null) {
          recordFullChunkProfilingCount(EarthChunkGenerator.FullChunkPhase.FILL_BIOME_CACHE_KOPPEN_HIT, climateCache.hitCount());
@@ -5086,7 +5090,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
                                     level.setBlock(ground, GRASS_BLOCK_STATE, 260);
                                  }
 
-                                 if (this.settings.customTrees()) {
+                                 if (this.usesProceduralTrees(biome)) {
                                     TellusCanopyHeightSource.CanopySample canopy = CANOPY_HEIGHT_SOURCE.sampleCanopy(
                                        worldX, worldZ, this.settings.worldScale()
                                     );
@@ -5226,7 +5230,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          level.setBlock(ground, GRASS_BLOCK_STATE, 260);
       }
 
-      if (this.settings.customTrees()) {
+      if (this.usesProceduralTrees(biome)) {
          TellusCanopyHeightSource.CanopySample canopy = CANOPY_HEIGHT_SOURCE.sampleCanopy(
             worldX, worldZ, this.settings.worldScale()
          );
@@ -5239,6 +5243,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          TreeFeatureHandle feature = features.get(random.nextInt(features.size()));
          feature.place(level, this, random, ground.above());
       }
+   }
+
+   /** Custom trees have no huge mushrooms, so Mushroom Fields keep the biome's own. */
+   private boolean usesProceduralTrees(Holder<Biome> biome) {
+      return this.settings.customTrees() && !biome.is(Biomes.MUSHROOM_FIELDS);
    }
 
    private int treePlacementCellSize() {
@@ -5266,7 +5275,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    }
 
    private boolean shouldPlaceTreesForCover(int coverClass, Holder<Biome> biome, int worldX, int worldZ, long seed) {
-      if (coverClass == MountainSurfaceRules.ESA_TREE_COVER) {
+      if (biome.is(Biomes.MUSHROOM_FIELDS) && seededRandomInt(seed ^ MUSHROOM_FIELDS_TREE_SALT, 100) >= MUSHROOM_FIELDS_TREE_CHANCE) {
+         // Huge mushrooms at every forest anchor would close into a solid canopy.
+         return false;
+      } else if (coverClass == MountainSurfaceRules.ESA_TREE_COVER) {
          return true;
       } else if (!this.settings.randomBiomes()
          || coverClass == ESA_NO_DATA
@@ -7238,6 +7250,15 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          null,
          shell.biomeCache()
       );
+      this.markSandyShoreBiomes(
+         pos,
+         terrainSurfaces,
+         waterSurfaces,
+         waterFlags,
+         biomeCache,
+         this.buildFullChunkOceanBeachCache(pos.getMinBlockX(), pos.getMinBlockZ(), waterFlags, oceanFlags),
+         earthBiomeSource
+      );
 
       EarthChunkGenerator.ChunkGenerationContext exactContext = EarthChunkGenerator.ChunkGenerationContext.capture(
          pos, chunkMinY, shell.maxY(), terrainSurfaces, waterSurfaces, waterFlags, surfaceCoverClasses, biomeCache, null, shell.generationStamp()
@@ -7522,6 +7543,12 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       }
 
       this.applyTerrainRefinementPatch(chunk, refinement);
+      if (this.biomeSource instanceof EarthBiomeSource earthBiomeSource) {
+         // The chunk resent below carries its biomes, so players see the refined shore too.
+         this.storeSandyShoreBiomes(
+            chunk, refinement.context().biomeCache(), refinement.terrainSurfaces(), level.getChunkSource().randomState(), earthBiomeSource
+         );
+      }
       this.applyUndergroundStructureProtection(level.structureManager(), chunk, refinement.terrainSurfaces(), true);
       this.carveStructureClearanceVolumes(level.structureManager(), chunk);
       this.applyPreparedChunkDetail(
@@ -10862,6 +10889,97 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       }
    }
 
+   /**
+    * Gives the columns of the chunk's sandy ocean shore Beach, or Snowy Beach where rivers freeze, before
+    * the surface, trees and deferred detail read them: sand keeps no trees, and turtles spawn on it.
+    */
+   private void markSandyShoreBiomes(
+      ChunkPos pos,
+      int[] terrainSurfaces,
+      int[] waterSurfaces,
+      boolean[] waterFlags,
+      Holder<Biome>[] biomeCache,
+      EarthChunkGenerator.FullChunkOceanBeachCache oceanBeachCache,
+      EarthBiomeSource earthBiomeSource
+   ) {
+      if (earthBiomeSource == null || oceanBeachCache == null || !oceanBeachCache.hasOcean()) {
+         return;
+      }
+
+      int chunkMinX = pos.getMinBlockX();
+      int chunkMinZ = pos.getMinBlockZ();
+      boolean[] oceanEdge = new boolean[CHUNK_AREA];
+      boolean anyOceanEdge = false;
+      for (int index = 0; index < CHUNK_AREA; index++) {
+         boolean dry = !(waterFlags[index] && waterSurfaces[index] > terrainSurfaces[index]);
+         oceanEdge[index] = dry && oceanBeachCache.distanceToOcean(chunkMinX + (index & CHUNK_MASK), chunkMinZ + (index >> 4)) >= 0;
+         anyOceanEdge |= oceanEdge[index];
+      }
+      if (!anyOceanEdge) {
+         return;
+      }
+
+      boolean[] shore = SandyShorePolicy.shoreColumns(
+         oceanEdge,
+         index -> !(waterFlags[index] && waterSurfaces[index] > terrainSurfaces[index])
+            && this.hasOvertureSandAt(chunkMinX + (index & CHUNK_MASK), chunkMinZ + (index >> 4))
+      );
+      Holder<Biome> shoreBiome = null;
+      for (int index = 0; index < CHUNK_AREA; index++) {
+         if (shore[index]) {
+            if (shoreBiome == null) {
+               shoreBiome = earthBiomeSource.sandyShoreBiome(chunkMinX + CHUNK_SIDE / 2, chunkMinZ + CHUNK_SIDE / 2);
+            }
+            biomeCache[index] = shoreBiome;
+         }
+      }
+   }
+
+   /**
+    * Stores the shore biomes of {@link #markSandyShoreBiomes} into the chunk, whose biomes, not the biome
+    * source's, decide which animals spawn there.
+    */
+   private void storeSandyShoreBiomes(
+      ChunkAccess chunk, Holder<Biome>[] biomeCache, int[] terrainSurfaces, RandomState random, EarthBiomeSource earthBiomeSource
+   ) {
+      if (earthBiomeSource == null) {
+         return;
+      }
+
+      boolean[] shore = new boolean[CHUNK_AREA];
+      boolean anyShore = false;
+      for (int index = 0; index < CHUNK_AREA; index++) {
+         Holder<Biome> biome = biomeCache[index];
+         shore[index] = biome != null && (biome.is(Biomes.BEACH) || biome.is(Biomes.SNOWY_BEACH));
+         anyShore |= shore[index];
+      }
+      if (!anyShore) {
+         return;
+      }
+
+      int[] floors = SandyShorePolicy.quartFloors(shore, terrainSurfaces);
+      Holder<Biome>[] quartBiomes = newBiomeCache(floors.length);
+      boolean anyQuart = false;
+      for (int quart = 0; quart < floors.length; quart++) {
+         if (floors[quart] == SandyShorePolicy.NO_SHORE) {
+            continue;
+         }
+         int firstColumn = (quart / 4) * 4 * CHUNK_SIDE + (quart % 4) * 4;
+         for (int dz = 0; dz < 4 && quartBiomes[quart] == null; dz++) {
+            for (int dx = 0; dx < 4 && quartBiomes[quart] == null; dx++) {
+               int index = firstColumn + dz * CHUNK_SIDE + dx;
+               if (shore[index]) {
+                  quartBiomes[quart] = biomeCache[index];
+               }
+            }
+         }
+         anyQuart = true;
+      }
+      if (anyQuart) {
+         WorldgenApi.fillBiomes(chunk, earthBiomeSource.sandyShoreResolver(chunk, quartBiomes, floors), random);
+      }
+   }
+
    private static EarthChunkGenerator.SurfacePalette mapApproximateSurfacePalette(
       MountainSurfaceRules.ApproximateSurface approximate, EarthChunkGenerator.SurfacePalette fallback, int worldX, int worldZ
    ) {
@@ -11405,10 +11523,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       boolean randomLandPatch = this.settings.randomBiomes() && RandomBiomeMixer.isLandPatchActive(this.settings, worldX, worldZ);
       if (biome.is(BiomeTags.IS_OCEAN) || (biome.is(BiomeTags.IS_RIVER) && MountainSurfaceRules.isWaterLikeCoverClass(coverClass))) {
          return this.oceanFloorPalette(worldX, worldZ);
+      } else if (biome.is(Biomes.MUSHROOM_FIELDS)) {
+         // Ahead of tree cover: Mushroom Fields grow inside Dark Forest.
+         return EarthChunkGenerator.SurfacePalette.mushroomFields();
       } else if (!randomLandPatch && coverClass == MountainSurfaceRules.ESA_TREE_COVER) {
          return this.coverDrivenSurfacePalette(coverClass, climateGroupForBiome(biome), worldX, worldZ, surface);
-      } else if (biome.is(Biomes.MUSHROOM_FIELDS)) {
-         return EarthChunkGenerator.SurfacePalette.mushroomFields();
       } else if (biome.is(Biomes.BEACH) || biome.is(Biomes.SNOWY_BEACH)) {
          return EarthChunkGenerator.SurfacePalette.beach();
       } else if (biome.is(Biomes.STONY_SHORE)) {
@@ -11531,7 +11650,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          return 1;
       } else if (biome.is(Biomes.DESERT) || biome.is(BiomeTags.IS_BADLANDS)) {
          return 2;
-      } else if (biome.is(Biomes.FROZEN_PEAKS) || biome.is(Biomes.SNOWY_PLAINS) || biome.is(Biomes.SNOWY_SLOPES) || biome.is(Biomes.ICE_SPIKES)) {
+      } else if (biome.is(Biomes.FROZEN_PEAKS)
+         || biome.is(Biomes.SNOWY_PLAINS)
+         || biome.is(Biomes.SNOWY_SLOPES)
+         || biome.is(Biomes.ICE_SPIKES)
+         || biome.is(Biomes.SNOWY_BEACH)) {
          return 5;
       } else if (biome.is(BiomeTags.IS_TAIGA) || biome.is(Biomes.GROVE) || biome.is(Biomes.JAGGED_PEAKS) || biome.is(Biomes.WINDSWEPT_GRAVELLY_HILLS)) {
          return 4;
