@@ -52,6 +52,27 @@ public final class EarthProjection {
       }
    }
 
+   /** Blocks from X = 0 to the ±180° meridian. */
+   public static double halfWidthBlocks(double worldScale) {
+      return worldScale <= 0.0 ? 0.0 : 180.0 * blocksPerDegree(worldScale);
+   }
+
+   /** Blocks from Z = 0 to the north or south edge of the projection. */
+   public static double halfHeightBlocks(double worldScale) {
+      if (worldScale <= 0.0) {
+         return 0.0;
+      }
+
+      return PROJECTION_MODE == EarthProjection.ProjectionMode.LEGACY
+         ? 90.0 * blocksPerDegree(worldScale)
+         : MAX_MERCATOR_Y_RATIO * EARTH_RADIUS_METERS / worldScale;
+   }
+
+   /** Latitude of the north and south edges of the projection, in degrees. */
+   public static double edgeLatitude() {
+      return PROJECTION_MODE == EarthProjection.ProjectionMode.LEGACY ? 90.0 : MAX_MERCATOR_LATITUDE;
+   }
+
    public static double groundMetersPerBlockX(double blockZ, double worldScale) {
       return projectedGroundScale(blockZ, worldScale);
    }

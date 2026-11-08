@@ -1,6 +1,7 @@
 package com.yucareux.tellus.integration.distant_horizons.managed;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,6 +10,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 import com.yucareux.tellus.preload.TerrainPreloadArea;
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import org.junit.jupiter.api.Test;
 
 class ManagedTerrainTargetTest {
@@ -84,6 +86,20 @@ class ManagedTerrainTargetTest {
 
       assertEquals(22, rectangle.size());
       assertEquals(pending, Set.copyOf(rectangle));
+   }
+
+   @Test
+   void cellsEntirelyPastTheMapEdgeAreNeverTargeted() {
+      MapEdgeWrap mapEdge = MapEdgeWrap.forWorld(1000.0, true);
+      int edgeChunk = mapEdge.maxXExclusive() >> 4;
+      ManagedTerrainTarget target = ManagedTerrainTarget.initial(edgeChunk - 2, 0, 32, mapEdge);
+      List<ManagedTerrainCell> cells = target.prioritizedCells(edgeChunk - 2, 0);
+      assertTrue(cells.contains(new ManagedTerrainCell(39, 0)), "the cell the cut runs through is still downloaded");
+      assertTrue(cells.stream().allMatch(cell -> cell.minChunkX() < edgeChunk));
+      assertTrue(cells.stream().noneMatch(cell -> cell.x() == 40));
+      assertFalse(target.contains(new ManagedTerrainCell(40, 0)));
+      assertTrue(target.update(edgeChunk - 3, 0, 32).prioritizedCells(edgeChunk - 3, 0).stream().allMatch(cell -> cell.minChunkX() < edgeChunk));
+      assertTrue(ManagedTerrainTarget.initial(edgeChunk - 2, 0, 32).prioritizedCells(edgeChunk - 2, 0).contains(new ManagedTerrainCell(40, 0)));
    }
 
    @Test

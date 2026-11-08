@@ -1,6 +1,7 @@
 package com.yucareux.tellus.worldgen.tree;
 
 import com.yucareux.tellus.compat.MinecraftVersionCompat;
+import com.yucareux.tellus.worldgen.MapEdgeWrites;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -118,6 +119,6 @@ final class TreePlacement {
    }
 
    private boolean canWrite(BlockPos position) {
-      return MinecraftVersionCompat.isInsideBuildHeight(this.level, position) && this.level.ensureCanWrite(position);
+      return MinecraftVersionCompat.isInsideBuildHeight(this.level, position) && MapEdgeWrites.canWrite(this.level, position);
    }
 }

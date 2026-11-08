@@ -62,6 +62,9 @@ public final class OceanCoastField {
    private final AtomicReferenceArray<RecentTile> recent = new AtomicReferenceArray<>(RECENT_TILES);
    private final AtomicLong generation = new AtomicLong();
    private final MacroTile noOceanTile;
+   // Past the map edge nothing is generated; cells there repeat the nearest cell inside, so the ocean does not end
+   // in a coast along the cut.
+   private final MapEdgeWrap mapEdgeWrap;
 
    public OceanCoastField(
       TellusOsmWaterSource waterSource,
@@ -79,6 +82,18 @@ public final class OceanCoastField {
       RawDepthSampler rawDepthSampler,
       int cellShift
    ) {
+      this(waterSource, worldScale, transitionBlocks, rawDepthSampler, cellShift, MapEdgeWrap.DISABLED);
+   }
+
+   public OceanCoastField(
+      TellusOsmWaterSource waterSource,
+      double worldScale,
+      int transitionBlocks,
+      RawDepthSampler rawDepthSampler,
+      int cellShift,
+      MapEdgeWrap mapEdgeWrap
+   ) {
+      this.mapEdgeWrap = mapEdgeWrap;
       this.waterSource = waterSource;
       this.worldScale = worldScale;
       this.transitionBlocks = OceanFloorProfile.clampTransitionDistance(transitionBlocks);
@@ -100,6 +115,11 @@ public final class OceanCoastField {
    }
 
    public OceanCoastSample sample(int blockX, int blockZ) {
+      if (this.mapEdgeWrap.isPastCut(blockX, blockZ)) {
+         blockX = this.mapEdgeWrap.clampX(blockX);
+         blockZ = this.mapEdgeWrap.clampZ(blockZ);
+      }
+
       int cellX = blockX >> this.cellShift;
       int cellZ = blockZ >> this.cellShift;
       int macroX = Math.floorDiv(cellX, this.coreSize);
@@ -267,6 +287,7 @@ public final class OceanCoastField {
             oceanCells += this.rasterize(feature, minX, minZ, size, ocean);
          }
       }
+      oceanCells += this.extendPastMapEdge(ocean, minX, minZ, size);
       if (oceanCells == 0) {
          return this.noOceanTile;
       }
@@ -497,6 +518,41 @@ public final class OceanCoastField {
          );
       }
       return filled[0];
+   }
+
+   /** Copies the nearest cell inside the map into every cell past its edge; returns the ocean cells added. */
+   private int extendPastMapEdge(boolean[] ocean, int minX, int minZ, int size) {
+      MapEdgeWrap wrap = this.mapEdgeWrap;
+      int offset = this.cellSize >> 1;
+      int minBlockX = minX * this.cellSize + offset;
+      int minBlockZ = minZ * this.cellSize + offset;
+      int maxBlockX = (minX + size - 1) * this.cellSize + offset;
+      int maxBlockZ = (minZ + size - 1) * this.cellSize + offset;
+      if (!wrap.areaReachesPastCut(minBlockX, maxBlockX, minBlockZ, maxBlockZ)) {
+         return 0;
+      }
+
+      int added = 0;
+      for (int z = 0; z < size; z++) {
+         int blockZ = (minZ + z) * this.cellSize + offset;
+         int sourceZ = Mth.clamp((wrap.clampZ(blockZ) >> this.cellShift) - minZ, 0, size - 1);
+         for (int x = 0; x < size; x++) {
+            int blockX = (minX + x) * this.cellSize + offset;
+            if (!wrap.isPastCut(blockX, blockZ)) {
+               continue;
+            }
+
+            int sourceX = Mth.clamp((wrap.clampX(blockX) >> this.cellShift) - minX, 0, size - 1);
+            int index = z * size + x;
+            boolean sourceOcean = ocean[sourceZ * size + sourceX];
+            if (sourceOcean && !ocean[index]) {
+               added++;
+            }
+            ocean[index] = sourceOcean;
+         }
+      }
+
+      return added;
    }
 
    private static int ceilDiv(int value, int divisor) {

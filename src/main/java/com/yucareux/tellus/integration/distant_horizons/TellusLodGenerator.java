@@ -36,6 +36,7 @@ import com.yucareux.tellus.worldgen.EarthBiomeSource;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import com.yucareux.tellus.worldgen.EarthProjection;
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import com.yucareux.tellus.worldgen.MountainSurfaceRules;
 import com.yucareux.tellus.worldgen.road.StreetLightPlanner;
 import com.yucareux.tellus.worldgen.ExperimentalHeightSupport;
@@ -217,8 +218,14 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
       if (!DistantHorizonsIntegration.isDistantGenerationReady()) {
          return ManagedTerrainAvailability.WAIT;
       }
+      if (isPastMapEdge(this.generator.mapEdgeWrap(), chunkPosMinX, chunkPosMinZ, widthChunks)) {
+         // Nothing to download or prepare: these sections are empty.
+         return ManagedTerrainAvailability.READY;
+      }
       if (this.managedDownloadsActive()) {
-         return ManagedTerrainAvailability.availability(this.managedTerrainKey, chunkPosMinX, chunkPosMinZ, widthChunks);
+         return ManagedTerrainAvailability.availability(
+            this.managedTerrainKey, chunkPosMinX, chunkPosMinZ, widthChunks, this.generator.mapEdgeWrap()
+         );
       }
       if (!ManagedTerrainCompatibility.isGenerationGateAvailable()) {
          return ManagedTerrainAvailability.READY;
@@ -228,6 +235,14 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
       );
       return request == null || this.lodPreparationQueue.isReady(request)
          ? ManagedTerrainAvailability.READY : ManagedTerrainAvailability.WAIT;
+   }
+
+   /** Whether the square of {@code widthChunks} chunks from the given corner lies entirely past the map edge. */
+   static boolean isPastMapEdge(MapEdgeWrap mapEdge, int chunkPosMinX, int chunkPosMinZ, int widthChunks) {
+      int minBlockX = SectionPos.sectionToBlockCoord(chunkPosMinX);
+      int minBlockZ = SectionPos.sectionToBlockCoord(chunkPosMinZ);
+      int span = Math.max(1, widthChunks) * 16 - 1;
+      return mapEdge.isAreaPastCut(minBlockX, minBlockX + span, minBlockZ, minBlockZ + span);
    }
 
    private boolean managedDownloadsActive() {
@@ -394,12 +409,55 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
       EDhApiDistantGeneratorMode generatorMode,
       TellusLodGenerator.LodTimingTrace trace
    ) {
+      MapEdgeWrap mapEdge = this.generator.mapEdgeWrap();
+      int cellSize = 1 << detailLevel;
+      int width = output.getWidthInDataColumns();
+      int baseX = SectionPos.sectionToBlockCoord(chunkPosMinX);
+      int baseZ = SectionPos.sectionToBlockCoord(chunkPosMinZ);
+      int lastX = baseX + width * cellSize - 1;
+      int lastZ = baseZ + width * cellSize - 1;
+      if (mapEdge.isAreaPastCut(baseX, lastX, baseZ, lastZ)) {
+         trace.note("mapEdge", "past");
+         this.writePastMapEdgeColumns(output, baseX, baseZ, cellSize, width, true);
+         return;
+      }
+
       // Sand lookups read tiles sized to this LOD's cells: the tiles its prefetch loaded.
-      this.generator.setLodSandResolution(lodPreviewResolutionMeters(this.generator.settings(), 1 << detailLevel));
+      this.generator.setLodSandResolution(lodPreviewResolutionMeters(this.generator.settings(), cellSize));
       try {
          this.buildLodColumns(output, chunkPosMinX, chunkPosMinZ, detailLevel, generatorMode, trace);
       } finally {
          this.generator.clearLodSandResolution();
+      }
+
+      if (mapEdge.areaReachesPastCut(baseX, lastX, baseZ, lastZ)) {
+         trace.note("mapEdge", "straddles");
+         this.writePastMapEdgeColumns(output, baseX, baseZ, cellSize, width, false);
+      }
+   }
+
+   /**
+    * Empties the columns past the map edge, where nothing is generated: air from bottom to top, marked as finished so
+    * DH does not ask for them again. A column counts as past the edge when its cell centre is.
+    */
+   private void writePastMapEdgeColumns(IDhApiFullDataSource output, int baseX, int baseZ, int cellSize, int width, boolean all) {
+      MapEdgeWrap mapEdge = this.generator.mapEdgeWrap();
+      int cellOffset = cellSize >> 1;
+      int minY = this.generator.getMinY();
+      int absoluteTop = dhCompatibleMaxY(minY, this.generator) - minY;
+      TellusLodGenerator.WrapperCache wrappers = this.wrapperCache.get();
+      for (int localZ = 0; localZ < width; localZ++) {
+         int centerZ = baseZ + localZ * cellSize + cellOffset;
+         for (int localX = 0; localX < width; localX++) {
+            int centerX = baseX + localX * cellSize + cellOffset;
+            if (!all && !mapEdge.isPastCut(centerX, centerZ)) {
+               continue;
+            }
+
+            List<DhApiTerrainDataPoint> column = new ArrayList<>(1);
+            column.add(DhApiTerrainDataPoint.create((byte)0, 0, 15, 0, absoluteTop, wrappers.airBlock(), wrappers.defaultBiome()));
+            output.setApiDataPointColumn(localX, localZ, EDhApiWorldGenerationStep.FEATURES, column);
+         }
       }
    }
 
@@ -2083,6 +2141,9 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
       // Terrain metrics of coarse cells also read the heights one cell past the tile.
       LodBlockRange range = LodBlockRange.forDhTile(chunkPosMinX, chunkPosMinZ, detail, lodSizePoints)
          .expandedBy(cellSize >= LodTerrainMetrics.BASELINE_BLOCKS ? cellSize : 0);
+      if (this.generator.mapEdgeWrap().isAreaPastCut(range.minX(), range.maxX(), range.minZ(), range.maxZ())) {
+         return LodPrefetchBatcher.completedSubmission();
+      }
       boolean roadsActive = this.shouldRenderDhRoads(detail);
       boolean buildingsActive = this.shouldRenderDhBuildings(detail);
       LodPrefetchBatcher.Request request = new LodPrefetchBatcher.Request(
@@ -5933,6 +5994,10 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 
       public IDhApiBlockStateWrapper airBlock() {
          return this.airBlock;
+      }
+
+      IDhApiBiomeWrapper defaultBiome() {
+         return this.defaultBiome;
       }
 
       public IDhApiBlockStateWrapper getBlockState(BlockState blockState) {

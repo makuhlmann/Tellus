@@ -45,8 +45,14 @@ public final class TellusChunkLodGenerator extends AbstractDhApiChunkWorldGenera
       if (!DistantHorizonsIntegration.isDistantGenerationReady()) {
          return ManagedTerrainAvailability.WAIT;
       }
+      if (TellusLodGenerator.isPastMapEdge(this.generator.mapEdgeWrap(), chunkPosMinX, chunkPosMinZ, widthChunks)) {
+         // Empty chunks past the map edge need no downloads.
+         return ManagedTerrainAvailability.READY;
+      }
       return this.managedDownloadsActive()
-         ? ManagedTerrainAvailability.availability(this.managedTerrainKey, chunkPosMinX, chunkPosMinZ, widthChunks)
+         ? ManagedTerrainAvailability.availability(
+            this.managedTerrainKey, chunkPosMinX, chunkPosMinZ, widthChunks, this.generator.mapEdgeWrap()
+         )
          : ManagedTerrainAvailability.READY;
    }
 

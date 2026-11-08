@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
+import com.google.gson.JsonObject;
 import com.mojang.serialization.JsonOps;
 import com.yucareux.tellus.Tellus;
 import com.yucareux.tellus.cache.TellusCacheDomain;
@@ -33,6 +34,7 @@ public final class TerrainPreloadStorage {
    public static final String RELATIVE_CACHE_PATH = "tellus/cache/preloaded-terrain/v1";
    private static final long MAX_MANIFEST_BYTES = 1024L * 1024L;
    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+   private static final String MAP_EDGE_WRAP_KEY = "map_edge_wrap";
    private static final TerrainPreloadStorage INSTANCE = new TerrainPreloadStorage();
 
    private TerrainPreloadStorage() {
@@ -162,11 +164,25 @@ public final class TerrainPreloadStorage {
    public String settingsFingerprint(JsonElement settingsJson) {
       try {
          MessageDigest digest = MessageDigest.getInstance("SHA-256");
-         byte[] hash = digest.digest(GSON.toJson(settingsJson).getBytes(StandardCharsets.UTF_8));
+         byte[] hash = digest.digest(GSON.toJson(fingerprintInput(settingsJson)).getBytes(StandardCharsets.UTF_8));
          return HexFormat.of().formatHex(hash);
       } catch (NoSuchAlgorithmException error) {
          throw new IllegalStateException("SHA-256 unavailable", error);
       }
+   }
+
+   /**
+    * The settings that decide a package's terrain. Keys added later that change nothing inside the map are left out,
+    * so packages built before they existed still match.
+    */
+   static JsonElement fingerprintInput(JsonElement settingsJson) {
+      if (!(settingsJson instanceof JsonObject object) || !object.has(MAP_EDGE_WRAP_KEY)) {
+         return settingsJson;
+      }
+
+      JsonObject copy = object.deepCopy();
+      copy.remove(MAP_EDGE_WRAP_KEY);
+      return copy;
    }
 
    public long sizeBytes() {

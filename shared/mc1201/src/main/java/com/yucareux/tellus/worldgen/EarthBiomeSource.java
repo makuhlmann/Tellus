@@ -97,6 +97,7 @@ public final class EarthBiomeSource extends BiomeSource {
    private final Set<Holder<Biome>> possibleBiomes;
    
    private final Holder<Biome> plains;
+   private volatile MapEdgeWrap mapEdgeWrap = MapEdgeWrap.DISABLED;
 
    private final Holder<Biome> sunflowerPlains;
 
@@ -203,6 +204,20 @@ public final class EarthBiomeSource extends BiomeSource {
 
    void setFastSpawnMode(boolean enabled) {
       this.fastSpawnMode = enabled;
+   }
+
+   /** Set by the generator so both agree on where the map ends (see {@link MapEdgeWrap}). */
+   void setMapEdgeWrap(MapEdgeWrap mapEdgeWrap) {
+      this.mapEdgeWrap = mapEdgeWrap;
+   }
+
+   /**
+    * Biomes for a chunk past the map's cut lines, where nothing is generated. They all get plains, which is
+    * already a possible biome, so adding the edge does not change the feature order other chunks decorate with.
+    */
+   BiomeResolver createPastCutBiomeResolver() {
+      Holder<Biome> biome = this.plains;
+      return (quartX, quartY, quartZ, sampler) -> biome;
    }
 
    void beginStructureBiomeQueries() {
@@ -365,6 +380,10 @@ public final class EarthBiomeSource extends BiomeSource {
 
    
    private Holder<Biome> resolveBiomeAtBlock(int blockX, int blockY, int blockZ) {
+      if (this.mapEdgeWrap.isPastCut(blockX, blockZ)) {
+         return this.plains;
+      }
+
       Integer structureQueryDepth = this.structureBiomeQueryDepth.get();
       boolean structureBiomeQuery = structureQueryDepth != null && structureQueryDepth > 0;
       if (structureBiomeQuery && blockY <= this.structureBiomeProbeCeilingY) {

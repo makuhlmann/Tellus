@@ -2,6 +2,7 @@ package com.yucareux.tellus.integration.voxy;
 
 import com.yucareux.tellus.compat.MinecraftVersionCompat;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
@@ -52,6 +53,8 @@ public final class TellusVoxyPregenManager {
    private volatile Integer chunksPerTickOverride;
    private volatile int lastConfiguredVoxyRadiusChunks;
    private volatile int lastEffectiveRadiusChunks;
+   // Chunks past the map edge are empty; pregenerating them for Voxy would only fill the queue.
+   private volatile MapEdgeWrap mapEdge = MapEdgeWrap.DISABLED;
 
    public void onServerTick(MinecraftServer server) {
       ServerLevel level = server.getLevel(Level.OVERWORLD);
@@ -60,6 +63,7 @@ public final class TellusVoxyPregenManager {
          this.lastConfiguredVoxyRadiusChunks = 0;
          this.lastEffectiveRadiusChunks = 0;
       } else if (level.getChunkSource().getGenerator() instanceof EarthChunkGenerator earthGenerator) {
+         this.mapEdge = earthGenerator.mapEdgeWrap();
          EarthGeneratorSettings var11 = earthGenerator.settings();
          if (!this.effectiveEnabled(var11)) {
             this.clearQueueAndPlayerState();
@@ -385,6 +389,10 @@ public final class TellusVoxyPregenManager {
    }
 
    private void enqueueChunk(int chunkX, int chunkZ) {
+      if (this.mapEdge.isChunkPastCut(chunkX, chunkZ)) {
+         return;
+      }
+
       long key = MinecraftVersionCompat.packChunkPos(chunkX, chunkZ);
       if (!this.completedChunks.contains(key)) {
          if (this.queued.add(key)) {
@@ -419,6 +427,10 @@ public final class TellusVoxyPregenManager {
    }
 
    private void enqueuePriorityChunk(int chunkX, int chunkZ) {
+      if (this.mapEdge.isChunkPastCut(chunkX, chunkZ)) {
+         return;
+      }
+
       long key = MinecraftVersionCompat.packChunkPos(chunkX, chunkZ);
       if (!this.completedChunks.contains(key)) {
          if (this.priorityQueued.add(key)) {

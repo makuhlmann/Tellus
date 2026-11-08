@@ -3,6 +3,7 @@ package com.yucareux.tellus.integration.distant_horizons.managed;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Random;
@@ -27,6 +28,19 @@ class ManagedTerrainAvailabilityTest {
       ManagedTerrainAvailability.markReady(KEY, new ManagedTerrainCell(0, 1), false);
       ManagedTerrainAvailability.markReady(KEY, new ManagedTerrainCell(1, 1), true);
       assertEquals(ManagedTerrainAvailability.READY, ManagedTerrainAvailability.availability(KEY, 0, 0, 64));
+   }
+
+   @Test
+   void onlyThePartOfARequestInsideTheMapHasToBeDownloaded() {
+      // At 1:1000 the east cut lies at chunk 1252, inside download cell 39 (chunks 1248-1279).
+      MapEdgeWrap mapEdge = MapEdgeWrap.forWorld(1000.0, true);
+      assertEquals(1252, mapEdge.maxXExclusive() >> 4);
+      assertEquals(ManagedTerrainAvailability.READY, ManagedTerrainAvailability.availability(KEY, 1256, 0, 16, mapEdge));
+      assertEquals(ManagedTerrainAvailability.WAIT, ManagedTerrainAvailability.availability(KEY, 1248, 0, 32, mapEdge));
+      ManagedTerrainAvailability.markReady(KEY, new ManagedTerrainCell(39, 0), false);
+      assertEquals(ManagedTerrainAvailability.READY, ManagedTerrainAvailability.availability(KEY, 1248, 0, 32, mapEdge));
+      // Without the edge the same request also needs the cells beyond it.
+      assertEquals(ManagedTerrainAvailability.WAIT, ManagedTerrainAvailability.availability(KEY, 1248, 0, 64));
    }
 
    @Test

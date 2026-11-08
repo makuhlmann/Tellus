@@ -21,6 +21,8 @@ import com.yucareux.tellus.network.ManagedTerrainViewPayload;
 import com.yucareux.tellus.platform.TellusPlatform;
 import com.yucareux.tellus.platform.TellusRuntimePlatform;
 import com.yucareux.tellus.world.data.osm.OvertureReleasePin;
+import com.yucareux.tellus.world.edge.MapEdgeBorders;
+import com.yucareux.tellus.world.edge.MapEdgeTeleports;
 import com.yucareux.tellus.world.realtime.TellusRealtimeManager;
 import com.yucareux.tellus.world.realtime.TellusRealtimeState;
 import com.yucareux.tellus.world.realtime.WeatherTemperaturePolicy;
@@ -89,9 +91,11 @@ public class TellusCommon {
    private static final TellusRealtimeManager REALTIME_MANAGER = new TellusRealtimeManager();
    private static final TellusVoxyPregenManager VOXY_PREGEN_MANAGER = new TellusVoxyPregenManager();
    private static final ManagedTerrainDownloadManager MANAGED_TERRAIN_DOWNLOAD_MANAGER = new ManagedTerrainDownloadManager();
+   private static final MapEdgeTeleports MAP_EDGE_TELEPORTS = new MapEdgeTeleports();
    private static final Map<UUID, CompletableFuture<BlockPos>> GEO_TELEPORT_LOOKUPS = new ConcurrentHashMap<>();
    private static final Map<UUID, TellusCommon.TeleportProgress> GEO_TELEPORT_PROGRESS = new ConcurrentHashMap<>();
    private static volatile Boolean teleportProgressOverride;
+   private static volatile Boolean mapEdgeTeleportOverride;
    public static final Logger LOGGER = LoggerFactory.getLogger("tellus");
 
 
@@ -188,6 +192,17 @@ public class TellusCommon {
                               )
                         )
                         .then(
+                           Commands.literal("map_edge_teleport")
+                              .then(
+                                 Commands.argument("enabled", Objects.requireNonNull(BoolArgumentType.bool(), "enabledArgument"))
+                                    .executes(
+                                       context -> setMapEdgeTeleportOverride(
+                                          (CommandSourceStack)context.getSource(), BoolArgumentType.getBool(context, "enabled")
+                                       )
+                                    )
+                              )
+                        )
+                        .then(
                            ((((Commands.literal("voxy")
                                           .then(Commands.literal("status").executes(context -> showVoxyPregenStatus((CommandSourceStack)context.getSource()))))
                                        .then(
@@ -234,6 +249,8 @@ public class TellusCommon {
          if (level.getChunkSource().getGenerator() instanceof EarthChunkGenerator earthGenerator) {
             OvertureReleasePin.recordForTellusWorld(worldRoot(level.getServer()));
             earthGenerator.bindLevelStorage(level);
+            // Portals into this level then lead inside the map, not into the empty chunks past its edge.
+            MapEdgeBorders.register(level.getWorldBorder(), earthGenerator.mapEdgeWrap());
          }
       });
       runtime.onServerStarted(server -> server.execute(() -> {
@@ -251,14 +268,17 @@ public class TellusCommon {
       runtime.onServerStopping(server -> {
          GEO_TELEPORT_PROGRESS.clear();
          teleportProgressOverride = null;
+         mapEdgeTeleportOverride = null;
          REALTIME_MANAGER.onServerStopping(server);
          VOXY_PREGEN_MANAGER.shutdown();
          MANAGED_TERRAIN_DOWNLOAD_MANAGER.reset();
+         MAP_EDGE_TELEPORTS.reset();
       });
       runtime.onServerTick(REALTIME_MANAGER::onServerTick);
       runtime.onServerTick(VOXY_PREGEN_MANAGER::onServerTick);
       runtime.onServerTick(server -> GEO_TELEPORT_PROGRESS.values().forEach(TellusCommon.TeleportProgress::update));
       runtime.onServerTick(MANAGED_TERRAIN_DOWNLOAD_MANAGER::onServerTick);
+      runtime.onServerTick(MAP_EDGE_TELEPORTS::onServerTick);
       runtime.onServerTick(server -> {
          if (MANAGED_TERRAIN_DOWNLOAD_MANAGER.shouldBroadcastStatus()) {
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
@@ -283,6 +303,7 @@ public class TellusCommon {
       });
       runtime.onPlayerJoin(REALTIME_MANAGER::onPlayerJoin);
       runtime.onPlayerDisconnect(MANAGED_TERRAIN_DOWNLOAD_MANAGER::onPlayerDisconnect);
+      runtime.onPlayerDisconnect(MAP_EDGE_TELEPORTS::onPlayerDisconnect);
       if (TellusPlatform.isModLoaded("distanthorizons")) {
          DistantHorizonsIntegration.bootstrap();
       }
@@ -479,6 +500,29 @@ public class TellusCommon {
          );
          return 1;
       }
+   }
+
+   private static int setMapEdgeTeleportOverride(CommandSourceStack source, boolean enabled) {
+      EarthChunkGenerator earthGenerator = resolveEarthGenerator(source);
+      if (earthGenerator == null) {
+         source.sendFailure(Component.translatable("tellus.command.geotp.tellus_world_only"));
+         return 0;
+      } else {
+         mapEdgeTeleportOverride = enabled;
+         source.sendSuccess(
+            () -> Component.translatable("tellus.command.config.map_edge_teleport_set", booleanLabel(enabled)), false
+         );
+         return 1;
+      }
+   }
+
+   /**
+    * Whether players reaching a map edge are moved to the other side: the runtime override if one is set, else the
+    * world's Map Edge Wrap setting. The override never changes what is generated past the edge.
+    */
+   public static boolean mapEdgeTeleportEnabled(EarthGeneratorSettings settings) {
+      Boolean override = mapEdgeTeleportOverride;
+      return override != null ? override : settings.mapEdgeWrap();
    }
 
    private static int setVoxyPregenEnabledOverride(CommandSourceStack source, boolean enabled) {

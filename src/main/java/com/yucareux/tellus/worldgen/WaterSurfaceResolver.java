@@ -148,6 +148,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    private final Cache<Long, Integer> lakeSurfaceCache;
    private final Cache<LodLakeKey, FeatureSurface> fastLakeSurfaces = CacheBuilder.newBuilder().maximumSize(16384).build();
    private final OceanCoastField oceanCoastField;
+   private final MapEdgeWrap mapEdgeWrap;
    // Distant LODs sample coasts and bathymetry at their own cell size (index = log2 cell size).
    private final java.util.concurrent.atomic.AtomicReferenceArray<OceanCoastField> coarseOceanCoastFields =
       new java.util.concurrent.atomic.AtomicReferenceArray<>(17);
@@ -216,11 +217,14 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          settings.worldScale()
       );
       this.minimumOffshoreDepth = OceanFloorProfile.minimumOffshoreDepthForScale(settings.worldScale());
+      this.mapEdgeWrap = MapEdgeWrap.forWorld(settings.worldScale(), settings.mapEdgeWrap());
       this.oceanCoastField = new OceanCoastField(
          this.osmWaterSource,
          settings.worldScale(),
          this.oceanFloorTransitionBlocks,
-         this::sampleSolveRawOceanDepth
+         this::sampleSolveRawOceanDepth,
+         0,
+         this.mapEdgeWrap
       );
       int scaledWaterfallDrop = Math.max(
          2,
@@ -743,6 +747,13 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    }
 
    private void prefetchRegion(int regionX, int regionZ) {
+      int regionMinX = regionX * REGION_SIZE;
+      int regionMinZ = regionZ * REGION_SIZE;
+      if (this.mapEdgeWrap.isAreaPastCut(regionMinX, regionMinX + REGION_SIZE - 1, regionMinZ, regionMinZ + REGION_SIZE - 1)) {
+         // Nothing is generated past the map edge.
+         return;
+      }
+
       long generation = this.cacheGeneration.get();
       long key = this.regionKey(regionX, regionZ, generation);
       if (this.regionCache.getIfPresent(key) == null) {
@@ -1262,6 +1273,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                landOverride[row + dx] = sample.mapterhornLandOverride();
             }
          }
+         this.extendSolveSurfacesPastMapEdge(gridMinX, gridMinZ, gridSize, heights, landOverride);
          return;
       }
 
@@ -1280,6 +1292,32 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                landOverride[row + dx + i] = tile.landOverride(source + i);
             }
             dx += run;
+         }
+      }
+
+      this.extendSolveSurfacesPastMapEdge(gridMinX, gridMinZ, gridSize, heights, landOverride);
+   }
+
+   /**
+    * Cells past the map edge repeat the nearest cell inside it, so a region solved across the cut sees neither a
+    * coast nor a step along it.
+    */
+   private void extendSolveSurfacesPastMapEdge(int gridMinX, int gridMinZ, int gridSize, int[] heights, boolean[] landOverride) {
+      MapEdgeWrap wrap = this.mapEdgeWrap;
+      if (!wrap.areaReachesPastCut(gridMinX, gridMinX + gridSize - 1, gridMinZ, gridMinZ + gridSize - 1)) {
+         return;
+      }
+
+      for (int dz = 0; dz < gridSize; dz++) {
+         int worldZ = gridMinZ + dz;
+         int sourceZ = Mth.clamp(wrap.clampZ(worldZ) - gridMinZ, 0, gridSize - 1);
+         for (int dx = 0; dx < gridSize; dx++) {
+            int worldX = gridMinX + dx;
+            if (wrap.isPastCut(worldX, worldZ)) {
+               int source = sourceZ * gridSize + Mth.clamp(wrap.clampX(worldX) - gridMinX, 0, gridSize - 1);
+               heights[dz * gridSize + dx] = heights[source];
+               landOverride[dz * gridSize + dx] = landOverride[source];
+            }
          }
       }
    }
@@ -2204,7 +2242,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             this.settings.worldScale(),
             this.oceanFloorTransitionBlocks,
             (x, z) -> this.sampleRawOceanDepth(x, z, resolutionMeters),
-            shift
+            shift,
+            this.mapEdgeWrap
          );
          field = this.coarseOceanCoastFields.compareAndExchange(shift, null, created);
          if (field == null) {

@@ -2,6 +2,7 @@ package com.yucareux.tellus.worldgen.tree;
 
 import com.yucareux.tellus.compat.MinecraftRelease;
 import com.yucareux.tellus.compat.MinecraftVersionCompat;
+import com.yucareux.tellus.worldgen.MapEdgeWrites;
 import com.yucareux.tellus.world.data.canopy.TellusCanopyHeightSource;
 import com.yucareux.tellus.world.data.resolve.ResolveBiome;
 import com.yucareux.tellus.world.data.resolve.ResolveEcoregion;
@@ -297,8 +298,8 @@ public final class TellusProceduralTreeGenerator {
       BlockPos crownTop = logPosition.above(2);
       if (!MinecraftVersionCompat.isInsideBuildHeight(level, logPosition)
          || !MinecraftVersionCompat.isInsideBuildHeight(level, crownTop)
-         || !level.ensureCanWrite(logPosition)
-         || !level.ensureCanWrite(crownTop)
+         || !MapEdgeWrites.canWrite(level, logPosition)
+         || !MapEdgeWrites.canWrite(level, crownTop)
          || !canReplaceTrunk(level.getBlockState(logPosition))
          || !canReplaceTrunk(level.getBlockState(crownTop))) {
          return false;
@@ -336,7 +337,7 @@ public final class TellusProceduralTreeGenerator {
          int x = ground.getX() + (int)Math.round(plan.leanX() * progress);
          int z = ground.getZ() + (int)Math.round(plan.leanZ() * progress);
          cursor.set(x, ground.getY() + y, z);
-         if (!level.ensureCanWrite(cursor)) {
+         if (!MapEdgeWrites.canWrite(level, cursor)) {
             return false;
          }
          BlockState current = level.getBlockState(cursor);

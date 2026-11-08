@@ -189,10 +189,34 @@ public final class TellusWorldgenSources {
       );
    }
 
+   private static volatile MapEdgeWrapForSettings lastMapEdgeWrap;
+
+   private record MapEdgeWrapForSettings(double worldScale, boolean enabled, MapEdgeWrap wrap) {
+   }
+
+   /** The map edge for these settings, reused while the settings stay the same. */
+   static MapEdgeWrap mapEdgeWrap(EarthGeneratorSettings settings) {
+      MapEdgeWrapForSettings last = lastMapEdgeWrap;
+      double worldScale = settings.worldScale();
+      boolean enabled = settings.mapEdgeWrap();
+      if (last != null && last.worldScale() == worldScale && last.enabled() == enabled) {
+         return last.wrap();
+      }
+
+      MapEdgeWrap wrap = MapEdgeWrap.forWorld(worldScale, enabled);
+      lastMapEdgeWrap = new MapEdgeWrapForSettings(worldScale, enabled, wrap);
+      return wrap;
+   }
+
+   private static boolean isPastMapEdge(ChunkPos pos, EarthGeneratorSettings settings) {
+      return mapEdgeWrap(settings).isChunkPastCut(MinecraftVersionCompat.chunkX(pos), MinecraftVersionCompat.chunkZ(pos));
+   }
+
    static void warmCriticalTerrainInputsForChunk(ChunkPos pos, EarthGeneratorSettings settings, double previewResolutionMeters) {
       if (ManagedTerrainNetworkPolicy.isCacheOnly()) return;
       Objects.requireNonNull(pos, "pos");
       Objects.requireNonNull(settings, "settings");
+      if (isPastMapEdge(pos, settings)) return;
       int centerX = pos.getMinBlockX() + 8;
       int centerZ = pos.getMinBlockZ() + 8;
       double worldScale = settings.worldScale();
@@ -276,7 +300,7 @@ public final class TellusWorldgenSources {
       double previewResolutionMeters,
       boolean allowInlineExecution
    ) {
-      if (ManagedTerrainNetworkPolicy.isCacheOnly()) return;
+      if (ManagedTerrainNetworkPolicy.isCacheOnly() || isPastMapEdge(pos, settings)) return;
       if (PREFETCH_ENABLED && PREFETCH_EXECUTOR != null) {
          if (!hasPreloadedTerrainForChunk(pos, settings, previewResolutionMeters)) {
             prefetchTerrainForChunk(pos, settings, previewResolutionMeters, allowInlineExecution);
@@ -301,10 +325,16 @@ public final class TellusWorldgenSources {
          return CompletableFuture.completedFuture(null);
       }
 
-      int minX = Math.min(minBlockX, maxBlockX);
-      int minZ = Math.min(minBlockZ, maxBlockZ);
-      int maxX = Math.max(minBlockX, maxBlockX);
-      int maxZ = Math.max(minBlockZ, maxBlockZ);
+      MapEdgeWrap mapEdge = mapEdgeWrap(settings);
+      if (mapEdge.isAreaPastCut(Math.min(minBlockX, maxBlockX), Math.max(minBlockX, maxBlockX), Math.min(minBlockZ, maxBlockZ), Math.max(minBlockZ, maxBlockZ))) {
+         return CompletableFuture.completedFuture(null);
+      }
+
+      // Nothing past the map edge is generated, so its data is never read.
+      int minX = mapEdge.clampX(Math.min(minBlockX, maxBlockX));
+      int minZ = mapEdge.clampZ(Math.min(minBlockZ, maxBlockZ));
+      int maxX = mapEdge.clampX(Math.max(minBlockX, maxBlockX));
+      int maxZ = mapEdge.clampZ(Math.max(minBlockZ, maxBlockZ));
       double worldScale = settings.worldScale();
       int marginBlocks = Math.max(16, (int)Math.ceil(64.0 / Math.max(1.0, worldScale)));
       int lodCellBlocks = lodCellSize(worldScale, previewResolutionMeters);
@@ -394,10 +424,16 @@ public final class TellusWorldgenSources {
          return;
       }
 
-      int minX = Math.min(minBlockX, maxBlockX);
-      int minZ = Math.min(minBlockZ, maxBlockZ);
-      int maxX = Math.max(minBlockX, maxBlockX);
-      int maxZ = Math.max(minBlockZ, maxBlockZ);
+      MapEdgeWrap mapEdge = mapEdgeWrap(settings);
+      if (mapEdge.isAreaPastCut(Math.min(minBlockX, maxBlockX), Math.max(minBlockX, maxBlockX), Math.min(minBlockZ, maxBlockZ), Math.max(minBlockZ, maxBlockZ))) {
+         return;
+      }
+
+      // Nothing past the map edge is generated, so its data is never read.
+      int minX = mapEdge.clampX(Math.min(minBlockX, maxBlockX));
+      int minZ = mapEdge.clampZ(Math.min(minBlockZ, maxBlockZ));
+      int maxX = mapEdge.clampX(Math.max(minBlockX, maxBlockX));
+      int maxZ = mapEdge.clampZ(Math.max(minBlockZ, maxBlockZ));
       double worldScale = settings.worldScale();
       int marginBlocks = Math.max(16, (int)Math.ceil(64.0 / Math.max(1.0, worldScale)));
       int lodCellBlocks = lodCellSize(worldScale, previewResolutionMeters);
@@ -617,7 +653,7 @@ public final class TellusWorldgenSources {
    static void prefetchTerrainForChunk(
       ChunkPos pos, EarthGeneratorSettings settings, double previewResolutionMeters, boolean allowInlineExecution
    ) {
-      if (ManagedTerrainNetworkPolicy.isCacheOnly()) return;
+      if (ManagedTerrainNetworkPolicy.isCacheOnly() || isPastMapEdge(pos, settings)) return;
       if (PREFETCH_ENABLED && PREFETCH_EXECUTOR != null) {
          int centerX = pos.getMinBlockX() + 8;
          int centerZ = pos.getMinBlockZ() + 8;
@@ -664,7 +700,7 @@ public final class TellusWorldgenSources {
       double previewResolutionMeters,
       boolean allowInlineExecution
    ) {
-      if (ManagedTerrainNetworkPolicy.isCacheOnly()) return;
+      if (ManagedTerrainNetworkPolicy.isCacheOnly() || isPastMapEdge(pos, settings)) return;
       if (PREFETCH_ENABLED && PREFETCH_EXECUTOR != null) {
          int centerX = pos.getMinBlockX() + 8;
          int centerZ = pos.getMinBlockZ() + 8;
@@ -696,7 +732,7 @@ public final class TellusWorldgenSources {
       double previewResolutionMeters,
       boolean allowInlineExecution
    ) {
-      if (ManagedTerrainNetworkPolicy.isCacheOnly()) return;
+      if (ManagedTerrainNetworkPolicy.isCacheOnly() || isPastMapEdge(pos, settings)) return;
       if (PREFETCH_ENABLED && PREFETCH_EXECUTOR != null) {
          int centerX = pos.getMinBlockX() + 8;
          int centerZ = pos.getMinBlockZ() + 8;
@@ -722,7 +758,10 @@ public final class TellusWorldgenSources {
    static void prefetchWaterRegionsForArea(
       int minBlockX, int minBlockZ, int maxBlockX, int maxBlockZ, EarthGeneratorSettings settings, boolean allowInlineExecution
    ) {
-      if (ManagedTerrainNetworkPolicy.isCacheOnly()) return;
+      if (ManagedTerrainNetworkPolicy.isCacheOnly()
+         || mapEdgeWrap(settings).isAreaPastCut(
+            Math.min(minBlockX, maxBlockX), Math.max(minBlockX, maxBlockX), Math.min(minBlockZ, maxBlockZ), Math.max(minBlockZ, maxBlockZ)
+         )) return;
       if (PREFETCH_ENABLED && PREFETCH_EXECUTOR != null && WATER_PREFETCH_ENABLED) {
          submitPrefetch(() -> waterResolver(settings).prefetchRegionsForArea(minBlockX, minBlockZ, maxBlockX, maxBlockZ), allowInlineExecution);
       }

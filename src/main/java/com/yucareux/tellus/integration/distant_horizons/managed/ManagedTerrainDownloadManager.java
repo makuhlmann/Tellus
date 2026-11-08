@@ -9,6 +9,7 @@ import com.yucareux.tellus.preload.TerrainPreloadProgress;
 import com.yucareux.tellus.preload.TerrainPreloadStage;
 import com.yucareux.tellus.world.data.source.DownloadProgressReporter;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import com.yucareux.tellus.worldgen.EarthProjection;
 import com.yucareux.tellus.worldgen.TellusWorldgenSources;
@@ -124,6 +125,7 @@ public final class ManagedTerrainDownloadManager {
                chunkX,
                chunkZ,
                renderRadius,
+               generator.mapEdgeWrap(),
                existing
             )
          );
@@ -612,11 +614,12 @@ public final class ManagedTerrainDownloadManager {
          int playerChunkX,
          int playerChunkZ,
          int renderRadius,
+         MapEdgeWrap mapEdge,
          PlayerState previous
       ) {
          ManagedTerrainTarget target = previous != null && generatorKey.equals(previous.generatorKey) && previous.target != null
             ? previous.target.update(playerChunkX, playerChunkZ, renderRadius)
-            : ManagedTerrainTarget.initial(playerChunkX, playerChunkZ, renderRadius);
+            : ManagedTerrainTarget.initial(playerChunkX, playerChunkZ, renderRadius, mapEdge);
          ManagedTerrainDownloadStatus planning = new ManagedTerrainDownloadStatus(
             ManagedTerrainDownloadStatus.Stage.PLANNING,
             0,

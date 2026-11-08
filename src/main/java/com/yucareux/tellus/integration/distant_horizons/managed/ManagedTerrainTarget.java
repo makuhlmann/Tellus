@@ -1,5 +1,6 @@
 package com.yucareux.tellus.integration.distant_horizons.managed;
 
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -11,7 +12,9 @@ public record ManagedTerrainTarget(
    int centerChunkZ,
    int renderRadiusChunks,
    int safetyRingChunks,
-   int targetRadiusChunks
+   int targetRadiusChunks,
+   // Cells entirely past the map edge are never downloaded: nothing is generated there.
+   MapEdgeWrap mapEdge
 ) {
    public static final int MIN_RENDER_RADIUS_CHUNKS = 32;
    public static final int MAX_RENDER_RADIUS_CHUNKS = 4096;
@@ -19,13 +22,17 @@ public record ManagedTerrainTarget(
    public static final int MAX_SAFETY_RING_CHUNKS = 128;
 
    public static ManagedTerrainTarget initial(int playerChunkX, int playerChunkZ, int renderRadiusChunks) {
+      return initial(playerChunkX, playerChunkZ, renderRadiusChunks, MapEdgeWrap.DISABLED);
+   }
+
+   public static ManagedTerrainTarget initial(int playerChunkX, int playerChunkZ, int renderRadiusChunks, MapEdgeWrap mapEdge) {
       int radius = clamp(renderRadiusChunks, MIN_RENDER_RADIUS_CHUNKS, MAX_RENDER_RADIUS_CHUNKS);
       int safetyRing = alignUp(clamp((radius + 7) / 8, MIN_SAFETY_RING_CHUNKS, MAX_SAFETY_RING_CHUNKS), ManagedTerrainCell.SIZE_CHUNKS);
-      return new ManagedTerrainTarget(playerChunkX, playerChunkZ, radius, safetyRing, radius + safetyRing);
+      return new ManagedTerrainTarget(playerChunkX, playerChunkZ, radius, safetyRing, radius + safetyRing, mapEdge);
    }
 
    public ManagedTerrainTarget update(int playerChunkX, int playerChunkZ, int renderRadiusChunks) {
-      ManagedTerrainTarget requested = initial(playerChunkX, playerChunkZ, renderRadiusChunks);
+      ManagedTerrainTarget requested = initial(playerChunkX, playerChunkZ, renderRadiusChunks, this.mapEdge);
       boolean radiusChanged = requested.renderRadiusChunks != this.renderRadiusChunks || requested.safetyRingChunks != this.safetyRingChunks;
       long dx = Math.abs((long)playerChunkX - this.centerChunkX);
       long dz = Math.abs((long)playerChunkZ - this.centerChunkZ);
@@ -43,7 +50,10 @@ public record ManagedTerrainTarget(
       List<ManagedTerrainCell> cells = new ArrayList<>((max.x() - min.x() + 1) * (max.z() - min.z() + 1));
       for (int z = min.z(); z <= max.z(); z++) {
          for (int x = min.x(); x <= max.x(); x++) {
-            cells.add(new ManagedTerrainCell(x, z));
+            ManagedTerrainCell cell = new ManagedTerrainCell(x, z);
+            if (!isPastMapEdge(cell)) {
+               cells.add(cell);
+            }
          }
       }
       cells.sort(
@@ -75,7 +85,14 @@ public record ManagedTerrainTarget(
       int minZ = saturatedSubtract(this.centerChunkZ, this.targetRadiusChunks);
       int maxX = saturatedAdd(this.centerChunkX, this.targetRadiusChunks);
       int maxZ = saturatedAdd(this.centerChunkZ, this.targetRadiusChunks);
-      return cell.maxChunkX() >= minX && cell.minChunkX() <= maxX && cell.maxChunkZ() >= minZ && cell.minChunkZ() <= maxZ;
+      return cell.maxChunkX() >= minX && cell.minChunkX() <= maxX && cell.maxChunkZ() >= minZ && cell.minChunkZ() <= maxZ
+         && !this.isPastMapEdge(cell);
+   }
+
+   private boolean isPastMapEdge(ManagedTerrainCell cell) {
+      return this.mapEdge.isAreaPastCut(
+         cell.minChunkX() << 4, (cell.maxChunkX() << 4) + 15, cell.minChunkZ() << 4, (cell.maxChunkZ() << 4) + 15
+      );
    }
 
    private static long chebyshev(ManagedTerrainCell a, ManagedTerrainCell b) {

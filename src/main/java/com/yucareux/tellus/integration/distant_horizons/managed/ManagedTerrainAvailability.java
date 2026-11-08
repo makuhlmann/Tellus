@@ -1,5 +1,6 @@
 package com.yucareux.tellus.integration.distant_horizons.managed;
 
+import com.yucareux.tellus.worldgen.MapEdgeWrap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -60,15 +61,42 @@ public final class ManagedTerrainAvailability {
    }
 
    public static byte availability(String key, int minChunkX, int minChunkZ, int widthChunks) {
-      Coverage coverage = COVERAGE.get(key);
-      if (coverage == null || coverage.ready.isEmpty()) {
-         return WAIT;
-      }
       int safeWidth = Math.max(1, widthChunks);
       long maxXLong = (long)minChunkX + safeWidth - 1L;
       long maxZLong = (long)minChunkZ + safeWidth - 1L;
       int maxChunkX = (int)Math.min(Integer.MAX_VALUE, maxXLong);
       int maxChunkZ = (int)Math.min(Integer.MAX_VALUE, maxZLong);
+      return availability(key, minChunkX, minChunkZ, maxChunkX, maxChunkZ, safeWidth);
+   }
+
+   /**
+    * {@link #availability(String, int, int, int)} for a request that may reach past the map edge. Nothing is
+    * downloaded there, so only the part inside the map has to be ready.
+    */
+   public static byte availability(String key, int minChunkX, int minChunkZ, int widthChunks, MapEdgeWrap mapEdge) {
+      if (!mapEdge.enabled()) {
+         return availability(key, minChunkX, minChunkZ, widthChunks);
+      }
+
+      int safeWidth = Math.max(1, widthChunks);
+      int maxChunkX = (int)Math.min(Integer.MAX_VALUE, (long)minChunkX + safeWidth - 1L);
+      int maxChunkZ = (int)Math.min(Integer.MAX_VALUE, (long)minChunkZ + safeWidth - 1L);
+      int clippedMinX = Math.max(minChunkX, mapEdge.minX() >> 4);
+      int clippedMinZ = Math.max(minChunkZ, mapEdge.minZ() >> 4);
+      int clippedMaxX = Math.min(maxChunkX, (mapEdge.maxXExclusive() >> 4) - 1);
+      int clippedMaxZ = Math.min(maxChunkZ, (mapEdge.maxZExclusive() >> 4) - 1);
+      if (clippedMinX > clippedMaxX || clippedMinZ > clippedMaxZ) {
+         return READY;
+      }
+
+      return availability(key, clippedMinX, clippedMinZ, clippedMaxX, clippedMaxZ, safeWidth);
+   }
+
+   private static byte availability(String key, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ, int safeWidth) {
+      Coverage coverage = COVERAGE.get(key);
+      if (coverage == null || coverage.ready.isEmpty()) {
+         return WAIT;
+      }
       ManagedTerrainCell min = ManagedTerrainCell.containingChunk(minChunkX, minChunkZ);
       ManagedTerrainCell max = ManagedTerrainCell.containingChunk(maxChunkX, maxChunkZ);
       long total = ((long)max.x() - min.x() + 1L) * ((long)max.z() - min.z() + 1L);

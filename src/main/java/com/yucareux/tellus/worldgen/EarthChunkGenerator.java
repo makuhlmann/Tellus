@@ -429,6 +429,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    private final Set<Long> restoredRefinements = ConcurrentHashMap.newKeySet();
    private int ticksUntilRefinementRestore;
    private final TellusLandmarks landmarks;
+   private final MapEdgeWrap mapEdgeWrap;
 
    public EarthChunkGenerator(BiomeSource biomeSource, EarthGeneratorSettings settings) {
       super(biomeSource, biome -> generationSettingsForBiome(biome, settings));
@@ -447,9 +448,17 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       int spawnBlockZ = Mth.floor(EarthProjection.latToBlockZ(settings.spawnLatitude(), settings.worldScale()));
       this.configuredSpawnChunkX = Math.floorDiv(spawnBlockX, 16);
       this.configuredSpawnChunkZ = Math.floorDiv(spawnBlockZ, 16);
+      this.mapEdgeWrap = MapEdgeWrap.forWorld(settings.worldScale(), settings.mapEdgeWrap());
+      if (settings.mapEdgeWrap() && !this.mapEdgeWrap.enabled()) {
+         Tellus.LOGGER.warn(
+            "Map edge wrap is off: at world scale {} the map edges lie outside the coordinates this world can store",
+            settings.worldScale()
+         );
+      }
       this.landmarks = TellusLandmarks.create(settings, this::sampleSurfaceHeight);
       if (biomeSource instanceof EarthBiomeSource earthBiomeSource) {
          earthBiomeSource.setFastSpawnMode(true);
+         earthBiomeSource.setMapEdgeWrap(this.mapEdgeWrap);
       }
 
       if (Tellus.LOGGER.isInfoEnabled()) {
@@ -566,6 +575,11 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       double blocksPerDegree = blocksPerDegree(this.settings.worldScale());
       int spawnX = Mth.floor(longitude * blocksPerDegree);
       int spawnZ = Mth.floor(EarthProjection.latToBlockZ(latitude, this.settings.worldScale()));
+      if (this.mapEdgeWrap.enabled()) {
+         // Keep spawns and map teleports away from the map edges, where the player would be moved on at once.
+         spawnX = Mth.floor(this.mapEdgeWrap.clampAwayFromEdgeX(spawnX + 0.5));
+         spawnZ = Mth.floor(this.mapEdgeWrap.clampAwayFromEdgeZ(spawnZ + 0.5));
+      }
       ExperimentalHeightSupport.validateHorizontalPositionOrThrow(
          this.settings, spawnX, spawnZ, "surface target lat=" + latitude + ", lon=" + longitude
       );
@@ -590,6 +604,15 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          this.settings, spawnX, spawnY, spawnZ, "surface target lat=" + latitude + ", lon=" + longitude
       );
       return new BlockPos(spawnX, spawnY, spawnZ);
+   }
+
+   /** Where the generated map ends; chunks past it stay empty apart from a barrier wall. */
+   public MapEdgeWrap mapEdgeWrap() {
+      return this.mapEdgeWrap;
+   }
+
+   private boolean isPastMapEdge(ChunkPos pos) {
+      return this.mapEdgeWrap.isChunkPastCut(MinecraftVersionCompat.chunkX(pos), MinecraftVersionCompat.chunkZ(pos));
    }
 
    public double longitudeFromBlock(double blockX) {
@@ -706,6 +729,12 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
 
          int chunkX = ChunkPos.getX(chunkKey);
          int chunkZ = ChunkPos.getZ(chunkKey);
+         if (this.mapEdgeWrap.isChunkPastCut(chunkX, chunkZ)) {
+            // Recorded before the map edge existed; nothing is generated there now.
+            store.discard(chunkKey);
+            continue;
+         }
+
          if (this.restoredRefinements.contains(chunkKey)
             || this.terrainRefinementManager.hasPending(chunkKey)
             || level.getChunkSource().getChunkNow(chunkX, chunkZ) == null
@@ -830,7 +859,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       Throwable failure = null;
       try {
          BiomeResolver resolver = this.biomeSource instanceof EarthBiomeSource earthBiomeSource
-            ? earthBiomeSource.createChunkBiomeResolver()
+            ? (this.isPastMapEdge(chunk.getPos()) ? earthBiomeSource.createPastCutBiomeResolver() : earthBiomeSource.createChunkBiomeResolver())
             : WorldgenApi.biomeResolver(this.biomeSource, random);
          WorldgenApi.fillBiomes(chunk, resolver, random);
          return chunk;
@@ -850,6 +879,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
        StructureManager structures,
       ChunkAccess chunk
    ) {
+      if (this.isPastMapEdge(chunk.getPos())) {
+         return;
+      }
+
       List<UndergroundStructureExclusion.Box> structureExclusions =
          this.collectUndergroundStructureExclusions(structures, chunk.getPos());
       long chunkKey = MinecraftVersionCompat.packChunkPos(
@@ -952,12 +985,21 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
 
    public void spawnOriginalMobs( WorldGenRegion level) {
       ChunkPos center = level.getCenter();
+      if (this.isPastMapEdge(center)) {
+         return;
+      }
+
       WorldgenRandom random = new WorldgenRandom(new LegacyRandomSource(RandomSupport.generateUniqueSeed()));
       random.setDecorationSeed(level.getSeed(), center.getMinBlockX(), center.getMinBlockZ());
       WorldgenApi.spawnMobs(level, center, random);
    }
 
    public void applyBiomeDecoration( WorldGenLevel level,  ChunkAccess chunk,  StructureManager structures) {
+      if (this.isPastMapEdge(chunk.getPos())) {
+         // Also keeps the pieces of structures that start inside the map out of the empty chunks.
+         return;
+      }
+
       EarthChunkGenerator.FullChunkTrace timingTrace = EarthChunkGenerator.FullChunkPerf.beginTrace("decoration", chunk.getPos());
       long chunkKey = MinecraftVersionCompat.packChunkPos(
          MinecraftVersionCompat.chunkX(chunk.getPos()), MinecraftVersionCompat.chunkZ(chunk.getPos())
@@ -1038,6 +1080,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
        StructureTemplateManager templates,
        ResourceKey<Level> levelKey
    ) {
+      if (this.isPastMapEdge(chunk.getPos())) {
+         return;
+      }
+
       EarthChunkGenerator.FullChunkTrace timingTrace = EarthChunkGenerator.FullChunkPerf.beginTrace("structures", chunk.getPos());
       try {
          long totalStartNs = beginFullChunkProfiling();
@@ -1117,6 +1163,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    }
 
    public void createReferences( WorldGenLevel level,  StructureManager structures,  ChunkAccess chunk) {
+      if (this.isPastMapEdge(chunk.getPos())) {
+         return;
+      }
+
       super.createReferences(level, structures, chunk);
    }
 
@@ -1140,8 +1190,54 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       }
    }
 
+   /**
+    * A chunk past the map's cut lines: nothing but the invisible barrier wall in the first column or row past a cut,
+    * which keeps the water at the edge in and stops anyone the edge teleport did not move.
+    */
+   private void fillPastMapEdge(ChunkAccess chunk, ChunkPos pos) {
+      int chunkX = MinecraftVersionCompat.chunkX(pos);
+      int chunkZ = MinecraftVersionCompat.chunkZ(pos);
+      long chunkKey = MinecraftVersionCompat.packChunkPos(chunkX, chunkZ);
+      this.discardPreparedChunkState(chunkKey);
+      PendingTerrainRefinementStore pendingRefinements = this.pendingRefinementStore;
+      if (pendingRefinements != null) {
+         pendingRefinements.discard(chunkKey);
+      }
+      // A refinement still running for an earlier version of this chunk is dropped as stale.
+      this.terrainGenerationStamps.remove(chunkKey);
+      if (!this.mapEdgeWrap.chunkHasBarrier(chunkX, chunkZ)) {
+         return;
+      }
+
+      int chunkMinY = MinecraftVersionCompat.minY(chunk);
+      int topY = chunkMinY + chunk.getHeight() - 1;
+      int minBlockX = chunkX << 4;
+      int minBlockZ = chunkZ << 4;
+      BlockState barrier = Blocks.BARRIER.defaultBlockState();
+      EarthChunkGenerator.ChunkSectionWriter writer = new EarthChunkGenerator.ChunkSectionWriter(chunk.getSections(), chunkMinY);
+      try {
+         for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
+            for (int localX = 0; localX < CHUNK_SIDE; localX++) {
+               if (this.mapEdgeWrap.isBarrier(minBlockX + localX, minBlockZ + localZ)) {
+                  writer.fillColumnConstant(localX, localZ, chunkMinY, topY, barrier);
+               }
+            }
+         }
+
+         writer.finish();
+      } finally {
+         writer.close();
+      }
+   }
+
    private void fillTellusSurface( RandomState random,  StructureManager structures,  ChunkAccess chunk) {
       ChunkPos pos = chunk.getPos();
+      if (this.isPastMapEdge(pos)) {
+         // Before the bounds check: at 1:1 these chunks reach past the coordinates the world can store.
+         this.fillPastMapEdge(chunk, pos);
+         return;
+      }
+
       validateExperimentalChunkBounds(this.settings, pos);
       long chunkKey = MinecraftVersionCompat.packChunkPos(MinecraftVersionCompat.chunkX(pos), MinecraftVersionCompat.chunkZ(pos));
       long generationStamp = this.chunkDetailGenerationSequence.incrementAndGet();
@@ -1307,6 +1403,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       EarthChunkGenerator.TerrainShellNeighborRing terrainShellNeighborRing = thinShellTerrain
          ? this.resolveTerrainShellNeighborRing(
             pos,
+            terrainSurfaces,
             heightGrid,
             gridSize,
             step,
@@ -3846,13 +3943,14 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       int gridMinZ = pos.getMinBlockZ() - step;
       int unavailableSamples = 0;
       for (int dz = 0; dz < gridSize; dz++) {
-         int worldZ = gridMinZ + dz;
+         // Past the map edge the margin repeats the edge, so the last chunk sees no slope toward the void.
+         int worldZ = this.mapEdgeWrap.clampZ(gridMinZ + dz);
          int row = dz * gridSize;
 
          for (int dx = 0; dx < gridSize; dx++) {
             int index = row + dx;
             if (!reusableLayout || heightGrid[index] == Integer.MIN_VALUE) {
-               int worldX = gridMinX + dx;
+               int worldX = this.mapEdgeWrap.clampX(gridMinX + dx);
                int unavailableReads = TellusElevationSource.unavailableTileReads();
                heightGrid[index] = useLocalTerrainInputs ? this.sampleSurfaceHeightLocalOnly(worldX, worldZ) : this.sampleSurfaceHeight(worldX, worldZ);
                if (TellusElevationSource.unavailableTileReads() != unavailableReads) {
@@ -3889,13 +3987,14 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       int gridMinX = pos.getMinBlockX() - step;
       int gridMinZ = pos.getMinBlockZ() - step;
       for (int dz = 0; dz < gridSize; dz++) {
-         int worldZ = gridMinZ + dz;
+         // Past the map edge the margin repeats the edge, so the last chunk sees no slope toward the void.
+         int worldZ = this.mapEdgeWrap.clampZ(gridMinZ + dz);
          int row = dz * gridSize;
 
          for (int dx = 0; dx < gridSize; dx++) {
             int index = row + dx;
             if (heightGrid[index] == Integer.MIN_VALUE) {
-               int worldX = gridMinX + dx;
+               int worldX = this.mapEdgeWrap.clampX(gridMinX + dx);
                int sampled = this.sampleSurfaceHeightMemoryOnly(worldX, worldZ);
                if (sampled != Integer.MIN_VALUE) {
                   heightGrid[index] = sampled;
@@ -4962,7 +5061,9 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    }
 
    public int getBaseHeight(int x, int z,  Types heightmapType,  LevelHeightAccessor heightAccessor,  RandomState random) {
-      if (this.isFastSpawnMode()) {
+      if (this.mapEdgeWrap.isPastCut(x, z)) {
+         return MinecraftVersionCompat.minY(heightAccessor);
+      } else if (this.isFastSpawnMode()) {
          int maxY = MinecraftVersionCompat.maxY(heightAccessor) - 1;
          return Mth.clamp(this.seaLevel + 1, MinecraftVersionCompat.minY(heightAccessor), maxY);
       } else {
@@ -4983,6 +5084,10 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       int height = heightAccessor.getHeight();
       BlockState[] states = new BlockState[height];
       Arrays.fill(states, AIR_STATE);
+      if (this.mapEdgeWrap.isPastCut(x, z)) {
+         return Objects.requireNonNull(new NoiseColumn(minY, states), "noiseColumn");
+      }
+
       int coverClass = this.sampleCoverClass(x, z);
       EarthChunkGenerator.ColumnHeights column = this.resolveFastColumnHeights(x, z, minY, minY + height, coverClass);
       int surface = column.terrainSurface();
@@ -5391,9 +5496,19 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
     *
     * <p>A refinement rethrows missing coastline coverage so it is retried; a first fill keeps the raw surfaces on that
     * edge and reports it, so the chunk can be refined once the coverage arrives.
+    *
+    * <p>Past the map edge nothing is generated, so a side facing it repeats the chunk's own edge surfaces: no bedrock
+    * skin or curtain is built along the cut, and no water is resolved for the empty chunk.
     */
    private EarthChunkGenerator.TerrainShellNeighborRing resolveTerrainShellNeighborRing(
-      ChunkPos pos, int[] heightGrid, int gridSize, int step, int minY, int maxY, EarthChunkGenerator.TerrainShellNeighborWater water
+      ChunkPos pos,
+      int[] ownSurfaces,
+      int[] heightGrid,
+      int gridSize,
+      int step,
+      int minY,
+      int maxY,
+      EarthChunkGenerator.TerrainShellNeighborWater water
    ) {
       int[] surfaces = new int[TerrainShellBedrockProtection.NEIGHBOR_RING_SIZE];
       boolean waterUnresolved = false;
@@ -5403,6 +5518,22 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       for (int side = 0; side < 4; side++) {
          int offsetX = side == 0 ? -1 : side == 1 ? 1 : 0;
          int offsetZ = side == 2 ? -1 : side == 3 ? 1 : 0;
+         if (this.mapEdgeWrap.isChunkPastCut(chunkX + offsetX, chunkZ + offsetZ)) {
+            for (int i = 0; i < CHUNK_SIDE; i++) {
+               int ringIndex = switch (side) {
+                  case 0 -> TerrainShellBedrockProtection.westRingIndex(i);
+                  case 1 -> TerrainShellBedrockProtection.eastRingIndex(i);
+                  case 2 -> TerrainShellBedrockProtection.northRingIndex(i);
+                  default -> TerrainShellBedrockProtection.southRingIndex(i);
+               };
+               int ownX = offsetX < 0 ? 0 : offsetX > 0 ? CHUNK_SIDE - 1 : i;
+               int ownZ = offsetZ < 0 ? 0 : offsetZ > 0 ? CHUNK_SIDE - 1 : i;
+               surfaces[ringIndex] = ownSurfaces[chunkIndex(ownX, ownZ)];
+            }
+
+            continue;
+         }
+
          WaterSurfaceResolver.WaterChunkData neighborWater = null;
          try {
             // The same calls the neighbour makes for itself (resolveChunkWaterData / buildExactWaterChunkData).
@@ -7188,7 +7319,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
 	      );
       this.applyLandmarkGroundToTerrain(pos, terrainSurfaces, waterSurfaces, waterFlags, chunkMinY, shell.maxY());
       int[] neighborSurfaces = this.resolveTerrainShellNeighborRing(
-         pos, heightGrid, gridSize, step, chunkMinY, shell.maxY(), EarthChunkGenerator.TerrainShellNeighborWater.REFINEMENT
+         pos, terrainSurfaces, heightGrid, gridSize, step, chunkMinY, shell.maxY(), EarthChunkGenerator.TerrainShellNeighborWater.REFINEMENT
       )
          .surfaces();
       int[] terrainShellBedrockSkinTopYs = TerrainShellBedrockProtection.sideSkinTopYs(
@@ -8445,7 +8576,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
             BuildingEntranceAccess.place(blueprint, minY, maxY,
                position -> level.hasChunk(position.getX() >> 4, position.getZ() >> 4)
                   ? level.getBlockState(position) : Blocks.BARRIER.defaultBlockState(),
-               (position, state) -> level.setBlock(position, state, flags));
+               (position, state) -> this.setBlockInsideMapEdge(level, position, state, flags));
          }
       }
    }
@@ -9686,9 +9817,16 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    private void setBuildingBlock(
       WorldGenLevel level, MutableBlockPos cursor, int worldX, int worldY, int worldZ, BlockState state, int flags, int minY, int maxY
    ) {
-      if (state != null && worldY >= minY && worldY <= maxY) {
+      if (state != null && worldY >= minY && worldY <= maxY && !this.mapEdgeWrap.isPastCut(worldX, worldZ)) {
          cursor.set(worldX, worldY, worldZ);
          level.setBlock(cursor, state, flags);
+      }
+   }
+
+   /** Writes that may reach a neighbouring chunk; nothing is written past the map edge. */
+   private void setBlockInsideMapEdge(WorldGenLevel level, BlockPos position, BlockState state, int flags) {
+      if (!this.mapEdgeWrap.isPastCut(position.getX(), position.getZ())) {
+         level.setBlock(position, state, flags);
       }
    }
 
@@ -10216,7 +10354,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          StreetLightModel.place(light.lamp(), light.baseY(), minY, maxY,
             position -> level.hasChunk(position.getX() >> 4, position.getZ() >> 4)
                ? level.getBlockState(position) : Blocks.BARRIER.defaultBlockState(),
-            (position, state) -> level.setBlock(position, state, flags));
+            (position, state) -> this.setBlockInsideMapEdge(level, position, state, flags));
       }
    }
 

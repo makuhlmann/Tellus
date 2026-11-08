@@ -16,7 +16,9 @@
 		"OceanMonumentBuildingMixin",
 		"OceanMonumentStructureMixin",
 		"ServerMainNewWorldHeightMixin",
-		"WaterSourceConversionMixin"
+		"WaterSourceConversionMixin",
+		"WorldGenRegionMapEdgeMixin",
+		"WorldBorderMapEdgeMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

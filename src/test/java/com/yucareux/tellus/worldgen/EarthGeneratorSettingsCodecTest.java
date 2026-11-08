@@ -126,6 +126,26 @@ class EarthGeneratorSettingsCodecTest {
    }
 
    @Test
+   void mapEdgeWrapIsOnForNewAndExistingWorldsAndRoundTrips() {
+      assertTrue(EarthGeneratorSettings.DEFAULT.mapEdgeWrap());
+      // Worlds saved before the setting existed have no key and get the wrap too.
+      EarthGeneratorSettings existing = requireSuccess(
+         EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"teleport_progress\":false}"))
+      );
+      assertTrue(existing.mapEdgeWrap());
+      assertFalse(existing.teleportProgress());
+
+      EarthGeneratorSettings disabled = requireSuccess(
+         EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"map_edge_wrap\":false}"))
+      );
+      JsonObject encoded = requireSuccess(EarthGeneratorSettings.CODEC.encodeStart(JsonOps.INSTANCE, disabled)).getAsJsonObject();
+      assertFalse(disabled.mapEdgeWrap());
+      assertTrue(disabled.teleportProgress());
+      assertFalse(encoded.get("map_edge_wrap").getAsBoolean());
+      assertEquals(disabled, requireSuccess(EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, encoded)));
+   }
+
+   @Test
    void abandonedCampsDefaultOffAndRoundTrip() {
       assertFalse(EarthGeneratorSettings.DEFAULT.addAbandonedCamps());
       // Worlds saved before the setting existed keep camps off.
