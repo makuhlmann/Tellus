@@ -68,6 +68,9 @@ public final class TellusElevationSource implements TellusCacheHandle {
    // tellus/cache/elevation-openwaters before going back to the official server.
    private static final String MAPTERHORN_ENDPOINT = endpointProperty("tellus.mapterhorn.endpoint", "https://tiles.mapterhorn.com");
    private static final String OPENWATERS_ENDPOINT = endpointProperty("tellus.openwaters.endpoint", "https://tiles.openwaters.io/seascape");
+   // A folder holding copies of Mapterhorn's downloadable archives (see MapterhornArchiveMirror). Set, it replaces
+   // the Mapterhorn tile server; tiles read from it share the disk cache too.
+   private static final String MAPTERHORN_ARCHIVES = endpointProperty("tellus.mapterhorn.archives", null);
    private static final int MAX_CACHE_TILES = intProperty("tellus.elevation.cacheTiles", 512);
    private static final int RECENT_TILES = 32;
    private static final int AREA_PREFETCH_SAMPLE_POINTS = intProperty("tellus.elevation.areaPrefetch.samples", 25);
@@ -103,6 +106,9 @@ public final class TellusElevationSource implements TellusCacheHandle {
    // Keyed by cache path: Mapterhorn and OpenWaters tiles share z/x/y keys.
    private final Cache<Path, Long> failedUntil = CacheBuilder.newBuilder().maximumSize(MAX_CACHE_TILES).build();
    private final MapterhornCoverageResolutionSource mapterhornResolutionSource = new MapterhornCoverageResolutionSource();
+   private final MapterhornArchiveMirror mapterhornArchives = MAPTERHORN_ARCHIVES == null
+      ? null
+      : new MapterhornArchiveMirror(MAPTERHORN_ARCHIVES, TILE_CONNECT_TIMEOUT_MS, TILE_READ_TIMEOUT_MS);
    private final TellusLandMaskSource landMask = TellusWorldgenSources.landMask();
    private volatile EarthGeneratorSettings.DemSelection lastLoggedSelection;
 
@@ -1124,11 +1130,13 @@ public final class TellusElevationSource implements TellusCacheHandle {
    }
 
    private void downloadTerrainTile(TellusElevationSource.TileKey key) {
-      this.downloadRawTile(key, this.cachePath(key), TellusCacheDomain.TERRAIN, MAPTERHORN_ENDPOINT, "Mapterhorn");
+      this.downloadRawTile(key, this.cachePath(key), TellusCacheDomain.TERRAIN, this::fetchMapterhornTile, "Mapterhorn");
    }
 
    private void downloadOpenWatersTile(TellusElevationSource.TileKey key) {
-      this.downloadRawTile(key, this.openWatersCachePath(key), TellusCacheDomain.OPENWATERS, OPENWATERS_ENDPOINT, "OpenWaters");
+      this.downloadRawTile(
+         key, this.openWatersCachePath(key), TellusCacheDomain.OPENWATERS, tile -> this.downloadTileOnce(tile, OPENWATERS_ENDPOINT), "OpenWaters"
+      );
    }
 
    /**
@@ -1201,7 +1209,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
    }
 
    private void downloadRawTile(
-      TellusElevationSource.TileKey key, Path cachePath, TellusCacheDomain domain, String endpoint, String providerName
+      TellusElevationSource.TileKey key, Path cachePath, TellusCacheDomain domain, TileFetcher fetcher, String providerName
    ) {
       if (Files.isRegularFile(cachePath)) {
          return;
@@ -1209,8 +1217,8 @@ public final class TellusElevationSource implements TellusCacheHandle {
 
       long generation = TellusCacheRegistry.generation(domain);
       try {
-         byte[] data = this.downloadTile(key, endpoint);
-         if (data != null && !this.cacheTile(cachePath, data, domain, generation)) {
+         byte[] data = this.downloadTile(key, fetcher);
+         if (data != null && data != MapterhornArchiveMirror.NOT_MIRRORED && !this.cacheTile(cachePath, data, domain, generation)) {
             throw new IOException("Discarded stale " + providerName + " cache write for " + key);
          }
       } catch (IOException error) {
@@ -2016,31 +2024,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
 
    /** The tile server base URL that {@code key} names, without a trailing slash; {@code fallback} when unset or invalid. */
    static String endpointProperty(String key, String fallback) {
-      String value = System.getProperty(key);
-      if (value == null || value.isBlank()) {
-         return fallback;
-      }
-
-      String endpoint = value.trim();
-      while (endpoint.endsWith("/")) {
-         endpoint = endpoint.substring(0, endpoint.length() - 1);
-      }
-      try {
-         URI uri = URI.create(endpoint);
-         String scheme = uri.getScheme();
-         if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
-            && uri.getHost() != null
-            && uri.getRawQuery() == null
-            && uri.getRawFragment() == null) {
-            Tellus.LOGGER.info("Reading elevation tiles for {} from {}", key, endpoint);
-            return endpoint;
-         }
-      } catch (IllegalArgumentException ignored) {
-         // Reported below.
-      }
-
-      Tellus.LOGGER.warn("Ignoring invalid {}='{}', which must be an http(s) URL without a query; using {}", key, value, fallback);
-      return fallback;
+      return ElevationEndpoints.urlProperty(key, fallback);
    }
 
    private ShortRaster getTile( TellusElevationSource.TileKey key) {
@@ -2172,15 +2156,26 @@ public final class TellusElevationSource implements TellusCacheHandle {
    }
 
    private ShortRaster loadTile( TellusElevationSource.TileKey key) throws IOException {
-      return this.loadTile(key, this.cachePath(key), TellusCacheDomain.TERRAIN, MAPTERHORN_ENDPOINT, "Mapterhorn");
+      return this.loadTile(key, this.cachePath(key), TellusCacheDomain.TERRAIN, this::fetchMapterhornTile, "Mapterhorn");
    }
 
    private ShortRaster loadOpenWatersTile(TellusElevationSource.TileKey key) throws IOException {
       return this.loadTile(key, this.openWatersCachePath(key), TellusCacheDomain.OPENWATERS, OPENWATERS_ENDPOINT, "OpenWaters");
    }
 
+   private byte[] fetchMapterhornTile(TellusElevationSource.TileKey key) throws IOException {
+      MapterhornArchiveMirror archives = this.mapterhornArchives;
+      return archives != null ? archives.tile(key.zoom(), key.x(), key.y()) : this.downloadTileOnce(key, MAPTERHORN_ENDPOINT);
+   }
+
    private ShortRaster loadTile(
       TellusElevationSource.TileKey key, Path cachePath, TellusCacheDomain cacheDomain, String endpoint, String providerName
+   ) throws IOException {
+      return this.loadTile(key, cachePath, cacheDomain, tile -> this.downloadTileOnce(tile, endpoint), providerName);
+   }
+
+   private ShortRaster loadTile(
+      TellusElevationSource.TileKey key, Path cachePath, TellusCacheDomain cacheDomain, TileFetcher fetcher, String providerName
    ) throws IOException {
       if (Files.exists(cachePath)) {
          try {
@@ -2209,7 +2204,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
       long generation = TellusCacheRegistry.generation(cacheDomain);
       byte[] data;
       try {
-         data = this.downloadTile(key, endpoint);
+         data = this.downloadTile(key, fetcher);
       } catch (IOException var10) {
          SourceInterrupts.throwIfInterruption(var10);
          this.failedUntil.put(cachePath, System.nanoTime() + TILE_FAILURE_RETRY_NANOS);
@@ -2223,7 +2218,10 @@ public final class TellusElevationSource implements TellusCacheHandle {
          throw var10;
       }
 
-      if (data == null) {
+      if (data == MapterhornArchiveMirror.NOT_MIRRORED) {
+         // Missing like a 404, but the archive may still be on its way into the mirror, so nothing goes on disk.
+         return missingTileRaster(cacheDomain, key);
+      } else if (data == null) {
          this.cacheTile(missingMarker, new byte[0], cacheDomain, generation);
          return missingTileRaster(cacheDomain, key);
       } else {
@@ -2245,11 +2243,17 @@ public final class TellusElevationSource implements TellusCacheHandle {
       }
    }
 
-   private byte[] downloadTile(TellusElevationSource.TileKey key, String endpoint) throws IOException {
+   /** Reads one tile once: its bytes, null when the source has no such tile, or {@link MapterhornArchiveMirror#NOT_MIRRORED}. */
+   @FunctionalInterface
+   private interface TileFetcher {
+      byte[] fetch(TellusElevationSource.TileKey key) throws IOException;
+   }
+
+   private byte[] downloadTile(TellusElevationSource.TileKey key, TileFetcher fetcher) throws IOException {
       IOException lastFailure = null;
       for (int attempt = 1; attempt <= TILE_DOWNLOAD_ATTEMPTS; attempt++) {
          try {
-            return this.downloadTileOnce(key, endpoint);
+            return fetcher.fetch(key);
          } catch (IOException error) {
             lastFailure = error;
             if (attempt < TILE_DOWNLOAD_ATTEMPTS) {

@@ -190,6 +190,7 @@ This section lets you toggle vanilla structures and world features on or off, su
 - Website: https://mapterhorn.com/
 - In-game processing: sampled as Terrarium elevation tiles, with zoom selected from player scale and cached locally for reuse.
 - A mirror serving the same `{z}/{x}/{y}.webp` tiles, with HTTP 404 for tiles it does not hold, can be selected with `tellus.mapterhorn.endpoint`.
+- Alternatively, `tellus.mapterhorn.archives` names a folder URL holding copies of the archives from https://download.mapterhorn.com/ (`planet.pmtiles` and the `6-x-y.pmtiles` high-resolution archives), served by any web server with HTTP range requests; Tellus then reads tiles straight out of them. The high-resolution archives can be cut to the zooms a world needs, for example `pmtiles extract <url> <file> --maxzoom=13` for 1:10; a world at a finer scale would then find the deeper zooms missing and remember that. A square without an archive counts as having no high-resolution data, but is not remembered on disk, so an archive added later is used. `tellus.mapterhorn.coverage.pmtiles` likewise reads source coverage from a copy of `coverage.pmtiles`.
 
 ### OpenWaters Seascape bathymetry
 - Source: OpenWaters Seascape bathymetry raster DEM tiles.

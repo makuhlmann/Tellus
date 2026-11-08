@@ -12,6 +12,7 @@ import com.yucareux.tellus.cache.TellusCacheFiles;
 import com.yucareux.tellus.cache.TellusCacheRegistry;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainNetworkPolicy;
 import com.yucareux.tellus.platform.TellusPlatform;
+import com.yucareux.tellus.world.data.osm.PmTilesRangeReader;
 import com.yucareux.tellus.world.data.source.InputStreamSafety;
 import com.yucareux.tellus.worldgen.EarthProjection;
 import io.github.sebasbaumh.mapbox.vectortile.VectorTile.Tile;
@@ -62,6 +63,12 @@ final class MapterhornCoverageResolutionSource {
    private static final int READ_TIMEOUT_MS = intProperty("tellus.mapterhorn.coverage.readTimeoutMs", 8000, 1000, 180000);
    private static final int DOWNLOAD_ATTEMPTS = intProperty("tellus.mapterhorn.coverage.downloadAttempts", 2, 1, 5);
    private static final String COVERAGE_ENDPOINT = stringProperty("tellus.mapterhorn.coverage.endpoint", DEFAULT_COVERAGE_ENDPOINT);
+   // A copy of Mapterhorn's coverage.pmtiles on a server with range requests, read in place of the endpoint. The
+   // archive holds the endpoint's tiles, gzip-compressed; this source caches what it reads, so the reader keeps none.
+   private static final String COVERAGE_ARCHIVE_URL = ElevationEndpoints.urlProperty("tellus.mapterhorn.coverage.pmtiles", null);
+   private static final PmTilesRangeReader COVERAGE_ARCHIVE = COVERAGE_ARCHIVE_URL == null
+      ? null
+      : new PmTilesRangeReader(COVERAGE_ARCHIVE_URL, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, 64, 0L);
 
    private final MapterhornCoverageResolutionSource.SourceCatalog catalog;
    private final Path cacheRoot;
@@ -219,6 +226,10 @@ final class MapterhornCoverageResolutionSource {
    }
 
    private static byte[] downloadTile(MapterhornCoverageResolutionSource.TileKey key) throws IOException {
+      if (COVERAGE_ARCHIVE != null) {
+         return archiveTile(COVERAGE_ARCHIVE, key);
+      }
+
       URI uri = URI.create(
          String.format(Locale.ROOT, "%s/%d/%d/%d.mvt", COVERAGE_ENDPOINT, key.zoom(), key.x(), key.y())
       );
@@ -245,6 +256,21 @@ final class MapterhornCoverageResolutionSource {
       } finally {
          connection.disconnect();
       }
+   }
+
+   /**
+    * The tile as the coverage endpoint sends it: decompressed, and empty where the archive has none, which the
+    * endpoint answers with 404. A missing archive is an error, so its tiles are not cached as empty.
+    */
+   static byte[] archiveTile(PmTilesRangeReader archive, MapterhornCoverageResolutionSource.TileKey key) throws IOException {
+      byte[] tile = archive.getTileBytes(key.zoom(), key.x(), key.y());
+      if (tile == null) {
+         return new byte[0];
+      }
+      if (tile.length > MAX_TILE_BYTES) {
+         throw new IOException("Mapterhorn coverage tile exceeds the safety limit for " + key);
+      }
+      return tile;
    }
 
    private Path cachePath(MapterhornCoverageResolutionSource.TileKey key) {

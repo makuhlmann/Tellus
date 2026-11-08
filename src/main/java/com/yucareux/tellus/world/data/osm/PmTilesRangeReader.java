@@ -37,6 +37,16 @@ public final class PmTilesRangeReader {
    private PmTilesRangeReader.Directory rootDirectory;
 
    public PmTilesRangeReader(String url, int connectTimeoutMs, int readTimeoutMs, int directoryCacheEntries) {
+      this(url, connectTimeoutMs, readTimeoutMs, directoryCacheEntries, MAX_TILE_PAYLOAD_CACHE_BYTES);
+   }
+
+   /**
+    * {@code tilePayloadCacheBytes} bounds the decoded tiles this reader keeps in memory; 0 keeps none, for callers
+    * that cache the tiles they read themselves.
+    */
+   public PmTilesRangeReader(
+      String url, int connectTimeoutMs, int readTimeoutMs, int directoryCacheEntries, long tilePayloadCacheBytes
+   ) {
       this.uri = requireHttpUri(URI.create(Objects.requireNonNull(url, "url")));
       this.connectTimeoutMs = Math.max(1, connectTimeoutMs);
       this.readTimeoutMs = Math.max(1, readTimeoutMs);
@@ -49,7 +59,7 @@ public final class PmTilesRangeReader {
             }
          });
       this.tilePayloadCache = CacheBuilder.newBuilder()
-         .maximumWeight(MAX_TILE_PAYLOAD_CACHE_BYTES)
+         .maximumWeight(Math.max(0L, tilePayloadCacheBytes))
          .weigher((Long tileId, TilePayload payload) -> Math.max(64, payload.bytes().length))
          .build(new CacheLoader<Long, TilePayload>() {
             @Override
@@ -297,12 +307,11 @@ public final class PmTilesRangeReader {
          InputStream error = connection.getErrorStream();
 
          try {
-            if (error == null) {
-               throw new IOException("PMTiles HTTP error " + code);
-            } else {
-               byte[] message = error.readNBytes(512);
-               throw new IOException("PMTiles HTTP error " + code + ": " + new String(message, StandardCharsets.UTF_8).trim());
+            String message = error == null ? "" : ": " + new String(error.readNBytes(512), StandardCharsets.UTF_8).trim();
+            if (code == HttpURLConnection.HTTP_NOT_FOUND) {
+               throw new ArchiveNotFoundException("PMTiles HTTP error " + code + message);
             }
+            throw new IOException("PMTiles HTTP error " + code + message);
          } catch (Throwable var6) {
             if (error != null) {
                try {
@@ -457,6 +466,13 @@ public final class PmTilesRangeReader {
 
    private static int directoryWeight(int entries) {
       return (int)Math.min(Integer.MAX_VALUE, 128L + Math.max(0L, entries) * 48L);
+   }
+
+   /** The server answered 404: it does not have the archive at all, as opposed to failing to serve it. */
+   public static final class ArchiveNotFoundException extends IOException {
+      private ArchiveNotFoundException(String message) {
+         super(message);
+      }
    }
 
    private static final class Directory {
