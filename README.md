@@ -39,7 +39,7 @@ Build all targets with `./gradlew build`, or only the new targets with `./gradle
 - OSM roads, buildings, and map features generated with Arnis-derived logic
 - Real-time inspired weather and time systems (optional)
 - Distant Horizons integration for long-distance terrain rendering
-- In-game map teleport UI for choosing real-world locations
+- In-game map for finding real-world places and their block coordinates, with standard, topographic and public transport maps, and teleporting for operators
 
 Houses use coordinated facades, framed windows, entrance canopies, and pitched roofs with enclosed attic space. High rises have a wider podium, aligned window bays, and upper setbacks that preserve usable floors. At 1:1 world scale, interiors use footprint-aware rooms, clear door approaches, furnished living and work areas, and continuous stairs with landings, guardrails, and floor openings. Very small multi-storey footprints use a ladder when a complete staircase cannot fit. These changes apply to newly generated chunks; existing buildings are not rebuilt automatically.
 
@@ -70,7 +70,7 @@ The `3.3.1-tellus.1` fork preserves extended-height LODs and Iris compatibility,
 
 ## Commands
 
-- `/tellus map`: Opens the GeoTP map UI (requires gamemaster permissions).
+- `/tellus map`: Opens the map (also bound to M). Any player can place a marker to see its block coordinates and switch between the standard, topographic and public transport maps. Only players with gamemaster permissions can teleport to the marker. The map keeps its zoom and map type until you leave the world or server.
 - `/tellus weather`: Shows local Tellus weather and time information at your current position.
 - `/tellus config weather enable_realtime_time <true|false>`: Overrides the real-time time setting on the server (requires gamemaster permissions).
 - `/tellus config weather enable_realtime_weather <true|false>`: Overrides the real-time weather setting on the server (requires gamemaster permissions).
@@ -205,6 +205,12 @@ This section lets you toggle vanilla structures and world features on or off, su
 - When raw bathymetry is deeper than the dimension permits, Tellus now fits it monotonically into the available vertical range instead of clamping every sample to the same bottom Y. Ocean floors reserve eight solid support blocks above the world minimum, configurable with `tellus.water.oceanFloorSupportBlocks` (`2..32`).
 - Compatibility: the serialized `ocean_shoreline_blend` setting is retained but is a no-op for oceans. River/lake shoreline blending is unchanged.
 - A mirror can be selected with `tellus.openwaters.endpoint`. It may hold only the tiles OpenWaters stores and answer HTTP 404 for the rest: Tellus then samples the nearest coarser stored zoom, down to the global z8, where the official server would upsample. Those misses are remembered on disk, so delete `tellus/cache/elevation-openwaters` before switching back to the official server.
+
+### In-game map tiles
+- Standard map: OpenStreetMap tiles from https://tile.openstreetmap.org/. © OpenStreetMap contributors.
+- Topographic map: OpenTopoMap (https://opentopomap.org/), up to zoom 17. Map data: © OpenStreetMap contributors, SRTM. Map style: © OpenTopoMap (CC-BY-SA).
+- Public transport map: ÖPNVKarte by MeMoMaps (https://öpnvkarte.de/), up to zoom 18. © OpenStreetMap contributors; map © MeMoMaps (CC BY-SA 2.0).
+- Tellus downloads only the tiles in view and keeps them in `tellus/cache/map`, so each tile is fetched once.
 
 ### Open-Meteo (weather)
 - Weather data provided by Open-Meteo.com.

@@ -54,6 +54,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       new ThreadFactoryBuilder().setDaemon(true).setNameFormat("tellus-map-load-%d").build()
    );
    private final Path cacheRoot = Minecraft.getInstance().gameDirectory.toPath().resolve("tellus/cache/map");
+   private volatile MapTileLayer layer = MapTileLayer.STANDARD;
    private volatile boolean shuttingDown;
    private long viewportRevision;
    private Map<SlippyMapTilePos, Integer> viewportPriorities = Map.of();
@@ -76,6 +77,19 @@ public class SlippyMapTileCache implements TellusCacheHandle {
 
    public SlippyMapTileCache() {
       TellusCacheRegistry.register(this);
+   }
+
+   public MapTileLayer getLayer() {
+      return this.layer;
+   }
+
+   /** Drops the tiles of the previous layer; downloads still running for it are cancelled and never shown. */
+   public void setLayer(MapTileLayer layer) {
+      Objects.requireNonNull(layer, "layer");
+      if (layer != this.layer) {
+         this.layer = layer;
+         this.clearCache();
+      }
    }
 
    public SlippyMapTile getTile(SlippyMapTilePos pos) {
@@ -166,7 +180,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
 
       long generation = TellusCacheRegistry.generation(TellusCacheDomain.OSM);
       SlippyMapTileCache.TileLoadTask task = new SlippyMapTileCache.TileLoadTask(
-         entry, generation, revision, priority, this.taskSequence.incrementAndGet()
+         entry, this.layer, generation, revision, priority, this.taskSequence.incrementAndGet()
       );
       entry.task = task;
       try {
@@ -190,7 +204,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
    private void loadTile(SlippyMapTileCache.TileLoadTask task) {
       NativeImage image;
       try {
-         byte[] data = this.readTileData(task.entry.pos, task.generation, task);
+         byte[] data = this.readTileData(task.entry.pos, task.layer, task.generation, task);
          if (task.cancelled || data == null) {
             this.finishCancelled(task);
             return;
@@ -259,19 +273,20 @@ public class SlippyMapTileCache implements TellusCacheHandle {
 
       if (failures == 1) {
          Tellus.LOGGER.warn(
-            "Failed to load map tile {}; retrying in {} ms",
+            "Failed to load {} map tile {}; retrying in {} ms",
+            task.layer.providerName(),
             task.entry.pos,
             TimeUnit.NANOSECONDS.toMillis(retryDelay),
             error
          );
       } else {
-         Tellus.LOGGER.debug("Map tile {} failed again (attempt {})", task.entry.pos, failures, error);
+         Tellus.LOGGER.debug("{} map tile {} failed again (attempt {})", task.layer.providerName(), task.entry.pos, failures, error);
       }
    }
 
-   private byte[] readTileData(SlippyMapTilePos pos, long generation, SlippyMapTileCache.TileLoadTask task) throws IOException {
+   private byte[] readTileData(SlippyMapTilePos pos, MapTileLayer layer, long generation, SlippyMapTileCache.TileLoadTask task) throws IOException {
       this.throwIfCancelled(task);
-      Path cachePath = this.cacheRoot.resolve(pos.getCacheName());
+      Path cachePath = layer.cacheDirectory(this.cacheRoot).resolve(pos.getCacheName());
       if (Files.isRegularFile(cachePath)) {
          if (Files.size(cachePath) <= MAX_TILE_BYTES) {
             try (InputStream input = new BufferedInputStream(Files.newInputStream(cachePath))) {
@@ -290,7 +305,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          }
       }
 
-      URI uri = URI.create(String.format("https://tile.openstreetmap.org/%s/%s/%s.png", pos.getZoom(), pos.getX(), pos.getY()));
+      URI uri = URI.create(layer.tileUrl(pos));
       URL url = uri.toURL();
       HttpURLConnection connection = (HttpURLConnection)url.openConnection();
       task.attachConnection(connection);
@@ -302,11 +317,13 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          connection.setRequestProperty("User-Agent", USER_AGENT);
          int responseCode = connection.getResponseCode();
          if (responseCode != HttpURLConnection.HTTP_OK) {
-            throw new SlippyMapTileCache.TileHttpException(responseCode, "OpenStreetMap tile request failed with HTTP " + responseCode + " for " + pos);
+            throw new SlippyMapTileCache.TileHttpException(
+               responseCode, layer.providerName() + " tile request failed with HTTP " + responseCode + " for " + pos
+            );
          }
          long contentLength = connection.getContentLengthLong();
          if (contentLength > MAX_TILE_BYTES) {
-            throw new IOException("OpenStreetMap tile response exceeds the safety limit for " + pos);
+            throw new IOException(layer.providerName() + " tile response exceeds the safety limit for " + pos);
          }
 
          InputStream stream = Objects.requireNonNull(connection.getInputStream(), "tileStream");
@@ -433,6 +450,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
 
    private final class TileLoadTask implements Runnable, Comparable<SlippyMapTileCache.TileLoadTask> {
       private final SlippyMapTileCache.TileEntry entry;
+      private final MapTileLayer layer;
       private final long generation;
       private final long revision;
       private final int priority;
@@ -443,8 +461,9 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       private volatile HttpURLConnection connection;
       private volatile InputStream stream;
 
-      private TileLoadTask(SlippyMapTileCache.TileEntry entry, long generation, long revision, int priority, long sequence) {
+      private TileLoadTask(SlippyMapTileCache.TileEntry entry, MapTileLayer layer, long generation, long revision, int priority, long sequence) {
          this.entry = entry;
+         this.layer = layer;
          this.generation = generation;
          this.revision = revision;
          this.priority = priority;

@@ -120,8 +120,8 @@ public class TellusCommon {
             dispatcher -> dispatcher.register(
                ((Commands.literal("tellus")
                         .then(
-                           (Commands.literal("map")
-                                 .requires(TellusMinecraftCompat::hasGamemasterPermission))
+                           // Everyone may look at the map; only the teleport it offers needs gamemaster permission.
+                           Commands.literal("map")
                               .executes(context -> openGeoTpMap((CommandSourceStack)context.getSource()))
                         ))
                      .then(
@@ -328,7 +328,11 @@ public class TellusCommon {
          if (level.getChunkSource().getGenerator() instanceof EarthChunkGenerator earthGenerator) {
             double latitude = clampLatitude(earthGenerator.latitudeFromBlock(player.getZ()));
             double longitude = clampLongitude(earthGenerator.longitudeFromBlock(player.getX()));
-            TellusPlatform.sendGeoTpOpenMapPayload(player, new GeoTpOpenMapPayload(latitude, longitude));
+            // The map only uses this to offer the teleport button; handleGeoTeleport checks the permission itself.
+            boolean canTeleport = TellusMinecraftCompat.hasGamemasterPermission(player.createCommandSourceStack());
+            TellusPlatform.sendGeoTpOpenMapPayload(
+               player, new GeoTpOpenMapPayload(latitude, longitude, earthGenerator.settings().worldScale(), canTeleport)
+            );
             return 1;
          } else {
             source.sendFailure(Component.translatable("tellus.command.geotp.tellus_world_only"));
@@ -761,6 +765,9 @@ public class TellusCommon {
                   if (error != null) {
                      LOGGER.warn("Failed to find the teleport surface at lat={}, lon={}", latitude, longitude, error);
                      player.sendSystemMessage(Component.translatable("tellus.command.geotp.failed").withStyle(ChatFormatting.RED));
+                  } else if (!TellusMinecraftCompat.hasGamemasterPermission(player.createCommandSourceStack())) {
+                     // Preparing the destination can take a while; the player may have lost the permission meanwhile.
+                     player.sendSystemMessage(Component.translatable("tellus.command.geotp.no_permission"));
                   } else {
                      player.teleportTo(target.getX() + 0.5, target.getY(), target.getZ() + 0.5);
                   }

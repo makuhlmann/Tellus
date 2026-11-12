@@ -27,8 +27,30 @@ public class SlippyMap {
 
    public void focus(double latitude, double longitude, int zoom) {
       int scale = Math.max(1, Minecraft.getInstance().getWindow().getGuiScale());
+      int clampedZoom = this.camera.clampZoom(zoom);
       SlippyMapPoint point = new SlippyMapPoint(latitude, longitude);
-      this.camera.focus(point.getX(zoom), point.getY(zoom), zoom, this.width * scale, this.height * scale);
+      this.camera.focus(point.getX(clampedZoom), point.getY(clampedZoom), clampedZoom, this.width * scale, this.height * scale);
+   }
+
+   public MapTileLayer getLayer() {
+      return this.cache.getLayer();
+   }
+
+   /** Shows another map; zooms out first if the new map has no tiles at the current zoom. */
+   public void setLayer(MapTileLayer layer) {
+      this.cache.setLayer(layer);
+      this.camera.maxZoom = layer.maxZoom();
+      if (this.camera.getZoom() > layer.maxZoom()) {
+         SlippyMapPoint center = this.getCenter();
+         this.focus(center.getLatitude(), center.getLongitude(), layer.maxZoom());
+      }
+   }
+
+   public SlippyMapPoint getCenter() {
+      int scale = Math.max(1, Minecraft.getInstance().getWindow().getGuiScale());
+      return new SlippyMapPoint(
+         this.camera.getX() + this.width * scale / 2, this.camera.getY() + this.height * scale / 2, this.camera.getZoom()
+      );
    }
 
    public void zoom(int step, int pivotX, int pivotY) {
@@ -105,13 +127,18 @@ public class SlippyMap {
    private static class Camera {
       private SlippyMapPoint origin;
       private int zoom = 3;
+      private int maxZoom = MAX_ZOOM;
 
       private Camera(SlippyMapPoint origin, int width, int height) {
          this.origin = origin.translate(-width / 2, -height / 2, this.zoom);
       }
 
+      private int clampZoom(int zoom) {
+         return Mth.clamp(zoom, MIN_ZOOM, this.maxZoom);
+      }
+
       public void focus(int x, int y, int zoom, int width, int height) {
-         int clampedZoom = Mth.clamp(zoom, MIN_ZOOM, MAX_ZOOM);
+         int clampedZoom = this.clampZoom(zoom);
          this.origin = new SlippyMapPoint(x, y, clampedZoom).translate(-width / 2, -height / 2, clampedZoom);
          this.zoom = clampedZoom;
       }
@@ -124,7 +151,7 @@ public class SlippyMap {
          if (steps != 0) {
             int originX = this.origin.getX(this.zoom);
             int originY = this.origin.getY(this.zoom);
-            int nextZoom = Mth.clamp(this.zoom + steps, MIN_ZOOM, MAX_ZOOM);
+            int nextZoom = this.clampZoom(this.zoom + steps);
             if (nextZoom == this.zoom) {
                return;
             }

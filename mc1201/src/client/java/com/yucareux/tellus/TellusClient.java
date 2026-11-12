@@ -1,5 +1,6 @@
 package com.yucareux.tellus;
 
+import com.yucareux.tellus.client.screen.EarthMapSession;
 import com.yucareux.tellus.client.screen.EarthTeleportScreen;
 import com.yucareux.tellus.client.hud.ManagedTerrainDownloadOverlay;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainClientState;
@@ -47,7 +48,7 @@ public class TellusClient implements ClientModInitializer {
          Minecraft minecraft = Minecraft.getInstance();
          minecraft.execute(() -> {
             Screen parent = minecraft.screen;
-            minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude()));
+            minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude(), payload.worldScale(), payload.canTeleport()));
          });
       });
       ClientPlayNetworking.registerGlobalReceiver(
@@ -94,6 +95,7 @@ public class TellusClient implements ClientModInitializer {
       ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
          TellusRealtimeState.reset();
          ManagedTerrainClientState.reset();
+         EarthMapSession.reset();
          this.managedTerrainViewUpdateTicks = 0;
       });
    }

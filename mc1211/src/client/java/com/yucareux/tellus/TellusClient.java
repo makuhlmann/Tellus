@@ -1,5 +1,6 @@
 package com.yucareux.tellus;
 
+import com.yucareux.tellus.client.screen.EarthMapSession;
 import com.yucareux.tellus.client.screen.EarthTeleportScreen;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainClientState;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainViewDistance;
@@ -48,7 +49,7 @@ public class TellusClient implements ClientModInitializer {
       ClientPlayNetworking.registerGlobalReceiver(Objects.requireNonNull(GeoTpOpenMapPayload.TYPE, "GeoTpOpenMapPayload.TYPE"), (payload, context) -> context.client().execute(() -> {
          Minecraft minecraft = context.client();
          Screen parent = minecraft.screen;
-         minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude()));
+         minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude(), payload.worldScale(), payload.canTeleport()));
       }));
       ClientPlayNetworking.registerGlobalReceiver(
          Objects.requireNonNull(TellusWeatherPayload.TYPE, "TellusWeatherPayload.TYPE"),
@@ -94,6 +95,7 @@ public class TellusClient implements ClientModInitializer {
       ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
          TellusRealtimeState.reset();
          ManagedTerrainClientState.reset();
+         EarthMapSession.reset();
          this.managedTerrainViewUpdateTicks = 0;
       });
    }

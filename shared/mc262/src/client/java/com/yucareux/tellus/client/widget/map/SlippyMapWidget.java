@@ -7,6 +7,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
@@ -17,7 +18,8 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
 
 public class SlippyMapWidget extends AbstractWidget {
-   private static final String ATTRIBUTION = "(c) OpenStreetMap Contributors";
+   private static final int ATTRIBUTION_PADDING = 10;
+   private static final int ATTRIBUTION_LINE_HEIGHT = 10;
    private final SlippyMap map;
    private final List<MapComponent> components = new ArrayList<>();
    private MapComponent dragComponent;
@@ -68,13 +70,25 @@ public class SlippyMapWidget extends AbstractWidget {
 
       graphics.pose().popMatrix();
       graphics.disableScissor();
+      this.drawAttribution(graphics);
+   }
+
+   private void drawAttribution(GuiGraphicsExtractor graphics) {
+      Font font = Minecraft.getInstance().font;
+      List<String> lines = this.map.getLayer().attributionLines(font, this.width - 8 - ATTRIBUTION_PADDING * 2);
+      int textWidth = 0;
+      for (String line : lines) {
+         textWidth = Math.max(textWidth, font.width(line));
+      }
+
       int maxX = this.getX() + this.width - 4;
       int maxY = this.getY() + this.height - 4 - this.attributionBottomPadding;
-      int attributionWidth = Minecraft.getInstance().font.width(ATTRIBUTION) + 20;
-      int attributionOriginX = maxX - attributionWidth;
-      int attributionOriginY = maxY - 9 - 4;
-      graphics.fill(attributionOriginX, attributionOriginY, maxX, maxY, -1072689136);
-      graphics.text(Minecraft.getInstance().font, ATTRIBUTION, attributionOriginX + 10, attributionOriginY + 2, -1);
+      int originX = maxX - textWidth - ATTRIBUTION_PADDING * 2;
+      int originY = maxY - lines.size() * ATTRIBUTION_LINE_HEIGHT - 3;
+      graphics.fill(originX, originY, maxX, maxY, -1072689136);
+      for (int index = 0; index < lines.size(); index++) {
+         graphics.text(font, lines.get(index), originX + ATTRIBUTION_PADDING, originY + 2 + index * ATTRIBUTION_LINE_HEIGHT, -1);
+      }
    }
 
    private void renderTile(GuiGraphicsExtractor graphics, int cameraX, int cameraY, int cameraZoom, SlippyMapTilePos pos, SlippyMapTile image, float delta) {

@@ -7,19 +7,36 @@ import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 
-public record GeoTpOpenMapPayload(double latitude, double longitude) implements CustomPacketPayload {
-   
+/**
+ * Opens the map on the client at the player's position. The world scale lets the map show block coordinates, and
+ * canTeleport only decides whether the map offers teleporting: the server checks the permission again on a request.
+ */
+public record GeoTpOpenMapPayload(double latitude, double longitude, double worldScale, boolean canTeleport) implements CustomPacketPayload {
+
    public static final CustomPacketPayload.Type<GeoTpOpenMapPayload> TYPE = new CustomPacketPayload.Type<>(Tellus.id("geotp_open_map"));
    public static final StreamCodec<FriendlyByteBuf, GeoTpOpenMapPayload> CODEC = StreamCodec.composite(
-      ByteBufCodecs.DOUBLE, GeoTpOpenMapPayload::latitude, ByteBufCodecs.DOUBLE, GeoTpOpenMapPayload::longitude, GeoTpOpenMapPayload::fromBoxed
+      ByteBufCodecs.DOUBLE,
+      GeoTpOpenMapPayload::latitude,
+      ByteBufCodecs.DOUBLE,
+      GeoTpOpenMapPayload::longitude,
+      ByteBufCodecs.DOUBLE,
+      GeoTpOpenMapPayload::worldScale,
+      ByteBufCodecs.BOOL,
+      GeoTpOpenMapPayload::canTeleport,
+      GeoTpOpenMapPayload::fromBoxed
    );
 
-   
+
    public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
       return TYPE;
    }
 
-   private static GeoTpOpenMapPayload fromBoxed(Double latitude, Double longitude) {
-      return new GeoTpOpenMapPayload(Objects.requireNonNull(latitude, "latitude"), Objects.requireNonNull(longitude, "longitude"));
+   private static GeoTpOpenMapPayload fromBoxed(Double latitude, Double longitude, Double worldScale, Boolean canTeleport) {
+      return new GeoTpOpenMapPayload(
+         Objects.requireNonNull(latitude, "latitude"),
+         Objects.requireNonNull(longitude, "longitude"),
+         Objects.requireNonNull(worldScale, "worldScale"),
+         Objects.requireNonNull(canTeleport, "canTeleport")
+      );
    }
 }
