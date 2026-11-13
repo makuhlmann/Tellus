@@ -14,6 +14,7 @@ import com.yucareux.tellus.platform.TellusPlatform;
 import com.yucareux.tellus.world.data.source.ParallelDownloadRunner;
 import com.yucareux.tellus.world.data.source.SourceInterrupts;
 import com.yucareux.tellus.worldgen.EarthProjection;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.URI;
@@ -33,6 +34,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
+import java.util.zip.DataFormatException;
+import java.util.zip.Deflater;
+import java.util.zip.Inflater;
 
 /**
  * Samples the ETH Global Canopy Height 2020 layer from its official ArcGIS
@@ -42,6 +46,10 @@ import java.util.function.BiConsumer;
  * The service's overview levels are selected for coarse previews, while
  * full-detail generation keeps native data at the map scales where individual
  * tree placement benefits from it.</p>
+ *
+ * <p>With {@code tellus.canopyHeight.cogBaseUrl} set, the same tiles are built from a copy of ETH's own 3-degree
+ * files instead (see {@link EthCanopyCogMirror}): identical at the native level, and about a metre off on average
+ * at the coarser levels, whose averaging differs slightly from the service's (single pixels can differ more).</p>
  */
 public final class TellusCanopyHeightSource implements TellusCacheHandle {
    public static final String DATASET_NAME = "ETH Global Canopy Height 2020";
@@ -75,9 +83,14 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
       16
    );
    private static final long FAILURE_RETRY_NANOS = TimeUnit.SECONDS.toNanos(30L);
+   // Decoded 1 MiB blocks of the ETH files; one serves sixteen native-level tiles.
+   private static final long COG_BLOCK_CACHE_BYTES =
+      (long)intProperty("tellus.canopyHeight.cogBlockCacheMiB", 64, 8, 1024) * 1024L * 1024L;
+   private static final int ETH_TILE_BYTES = TILE_SIZE * TILE_SIZE;
 
    private final String serviceUrl = configuredServiceUrl();
-   private final Path cacheRoot = TellusPlatform.gameDir().resolve("tellus/cache/canopy-height-eth-2020-v1/arcgis-living-atlas");
+   private final EthCanopyCogMirror cogMirror;
+   private final Path cacheRoot;
    private final HttpClient httpClient = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SECONDS))
       .followRedirects(HttpClient.Redirect.NORMAL)
@@ -90,8 +103,24 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
    private final AtomicBoolean serviceFailureLogged = new AtomicBoolean();
 
    public TellusCanopyHeightSource() {
-      for (int index = 0; index < DECODER_COUNT; index++) {
-         this.decoders.add(new LercU8Decoder());
+      this(configuredCogBaseUrl());
+   }
+
+   /** Reads ETH's own files from {@code cogBaseUrl} when it is not null, else the ArcGIS service. */
+   TellusCanopyHeightSource(String cogBaseUrl) {
+      Path cacheFolder = TellusPlatform.gameDir().resolve("tellus/cache/canopy-height-eth-2020-v1");
+      if (cogBaseUrl == null) {
+         this.cogMirror = null;
+         this.cacheRoot = cacheFolder.resolve("arcgis-living-atlas");
+         for (int index = 0; index < DECODER_COUNT; index++) {
+            this.decoders.add(new LercU8Decoder());
+         }
+      } else {
+         this.cogMirror = new EthCanopyCogMirror(
+            cogBaseUrl, CONNECT_TIMEOUT_SECONDS * 1000, REQUEST_TIMEOUT_SECONDS * 1000, COG_BLOCK_CACHE_BYTES
+         );
+         // Tiles built from the files are kept apart from the service's, in their own format.
+         this.cacheRoot = cacheFolder.resolve("eth-files");
       }
       TellusCacheRegistry.register(this);
    }
@@ -350,6 +379,9 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
    }
 
    private RasterTile loadTile(TileKey key, LookupMode lookupMode) throws IOException {
+      if (this.cogMirror != null) {
+         return this.loadEthFileTile(key, lookupMode);
+      }
       Path cachePath = this.cachePath(key);
       if (Files.isRegularFile(cachePath)) {
          try {
@@ -380,6 +412,77 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
       }
       this.serviceFailureLogged.set(false);
       return tile;
+   }
+
+   private RasterTile loadEthFileTile(TileKey key, LookupMode lookupMode) throws IOException {
+      Path cachePath = this.cachePath(key);
+      if (Files.isRegularFile(cachePath)) {
+         try {
+            return RasterTile.fromNoDataPixels(inflateTile(readCachedTile(cachePath)));
+         } catch (IOException | RuntimeException error) {
+            if (SourceInterrupts.isInterruption(error)) {
+               throw error;
+            }
+            Tellus.LOGGER.debug("Discarding invalid cached ETH canopy tile {}", cachePath, error);
+            Files.deleteIfExists(cachePath);
+         }
+      }
+
+      if (lookupMode != LookupMode.BLOCKING || ManagedTerrainNetworkPolicy.isCacheOnly()) {
+         throw new IOException("ETH canopy tile is not in the local cache");
+      }
+
+      EthCanopyCogMirror.Tile built = this.cogMirror.tile(key.level(), key.row(), key.column());
+      RasterTile tile = RasterTile.fromNoDataPixels(built.pixels());
+      // A tile missing a file stays in memory only: the file may still be on its way into the mirror.
+      if (built.complete()) {
+         long generation = TellusCacheRegistry.generation(TellusCacheDomain.CANOPY_HEIGHT);
+         if (TellusCacheFiles.writeBytesIfCurrent(TellusCacheDomain.CANOPY_HEIGHT, generation, cachePath, deflateTile(built.pixels()))) {
+            this.pruneDiskCachePeriodically();
+         }
+      }
+      this.serviceFailureLogged.set(false);
+      return tile;
+   }
+
+   static byte[] deflateTile(byte[] pixels) {
+      Deflater deflater = new Deflater(Deflater.BEST_SPEED);
+      try {
+         deflater.setInput(pixels);
+         deflater.finish();
+         ByteArrayOutputStream output = new ByteArrayOutputStream(4096);
+         byte[] buffer = new byte[16 * 1024];
+         while (!deflater.finished()) {
+            output.write(buffer, 0, deflater.deflate(buffer));
+         }
+         return output.toByteArray();
+      } finally {
+         deflater.end();
+      }
+   }
+
+   static byte[] inflateTile(byte[] compressed) throws IOException {
+      Inflater inflater = new Inflater();
+      try {
+         inflater.setInput(compressed);
+         byte[] pixels = new byte[ETH_TILE_BYTES];
+         int written = 0;
+         while (written < pixels.length && !inflater.finished()) {
+            int count = inflater.inflate(pixels, written, pixels.length - written);
+            if (count == 0 && (inflater.needsInput() || inflater.needsDictionary())) {
+               break;
+            }
+            written += count;
+         }
+         if (written != pixels.length || !inflater.finished()) {
+            throw new IOException("Cached ETH canopy tile holds " + written + " pixels");
+         }
+         return pixels;
+      } catch (DataFormatException error) {
+         throw new IOException("Corrupt cached ETH canopy tile", error);
+      } finally {
+         inflater.end();
+      }
    }
 
    private LercU8Decoder.DecodedRaster decode(byte[] bytes) throws IOException {
@@ -473,7 +576,8 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
    }
 
    private Path cachePath(TileKey key) {
-      return this.cacheRoot.resolve(Integer.toString(key.level())).resolve(Integer.toString(key.row())).resolve(key.column() + ".lerc");
+      String extension = this.cogMirror == null ? ".lerc" : ".u8z";
+      return this.cacheRoot.resolve(Integer.toString(key.level())).resolve(Integer.toString(key.row())).resolve(key.column() + extension);
    }
 
    static int levelForResolution(double worldScale, double previewResolutionMeters) {
@@ -609,6 +713,36 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
       }
    }
 
+   /** The folder URL of a copy of ETH's files, without a trailing slash; null when unset or invalid. */
+   static String configuredCogBaseUrl() {
+      String value = System.getProperty("tellus.canopyHeight.cogBaseUrl");
+      if (value == null || value.isBlank()) {
+         return null;
+      }
+      String url = value.trim();
+      while (url.endsWith("/")) {
+         url = url.substring(0, url.length() - 1);
+      }
+      try {
+         URI uri = URI.create(url);
+         String scheme = uri.getScheme();
+         if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+            && uri.getHost() != null
+            && uri.getRawQuery() == null
+            && uri.getRawFragment() == null) {
+            Tellus.LOGGER.info("Reading ETH canopy heights from the files at {}", url);
+            return url;
+         }
+      } catch (IllegalArgumentException ignored) {
+         // Reported below.
+      }
+      Tellus.LOGGER.warn(
+         "Ignoring invalid tellus.canopyHeight.cogBaseUrl='{}', which must be an http(s) URL without a query; using the ArcGIS service",
+         value
+      );
+      return null;
+   }
+
    private static String configuredServiceUrl() {
       String configured = System.getProperty("tellus.canopyHeight.serviceUrl", SERVICE_URL);
       String normalized = configured == null || configured.isBlank() ? SERVICE_URL : configured.trim();
@@ -684,6 +818,18 @@ public final class TellusCanopyHeightSource implements TellusCacheHandle {
             throw new IOException("Unexpected ETH canopy tile size " + decoded.width() + "x" + decoded.height());
          }
          return new RasterTile(decoded.width(), decoded.height(), decoded.pixels(), decoded.mask());
+      }
+
+      /** A tile from ETH's files, which mark missing heights with {@link EthCanopyCogMirror#NO_DATA}. */
+      private static RasterTile fromNoDataPixels(byte[] pixels) throws IOException {
+         if (pixels.length != ETH_TILE_BYTES) {
+            throw new IOException("Unexpected ETH canopy tile of " + pixels.length + " pixels");
+         }
+         byte[] mask = new byte[pixels.length];
+         for (int index = 0; index < pixels.length; index++) {
+            mask[index] = (byte)((pixels[index] & 0xFF) == EthCanopyCogMirror.NO_DATA ? 0 : 1);
+         }
+         return new RasterTile(TILE_SIZE, TILE_SIZE, pixels, mask);
       }
 
       private int sample(int pixelX, int pixelY) {
