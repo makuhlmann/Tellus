@@ -52,6 +52,7 @@ import com.yucareux.tellus.worldgen.caves.TellusCaveDepthMapper;
 import com.yucareux.tellus.worldgen.caves.TellusNoiseSettingsAdapter;
 import com.yucareux.tellus.worldgen.caves.TellusVanillaCarverRunner;
 import com.yucareux.tellus.worldgen.tree.TellusProceduralTreeGenerator;
+import com.yucareux.tellus.worldgen.tree.TrunkStartClearing;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -5223,6 +5224,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
                                  } else {
                                     RandomSource random = RandomSource.create(seed);
                                     TreeFeatureHandle feature = features.get(random.nextInt(features.size()));
+                                    TrunkStartClearing.clearPlants(level, position);
                                     feature.place(level, this, random, position);
                                  }
                               }
@@ -5363,7 +5365,9 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
       } else {
          RandomSource random = RandomSource.create(placement.seed());
          TreeFeatureHandle feature = features.get(random.nextInt(features.size()));
-         feature.place(level, this, random, ground.above());
+         BlockPos position = ground.above();
+         TrunkStartClearing.clearPlants(level, position);
+         feature.place(level, this, random, position);
       }
    }
 
