@@ -77,6 +77,13 @@ public final class MapEdgeTeleportCompat {
       );
    }
 
+   /** Lets go of an area {@link #holdArea} loaded, before its ticket runs out. */
+   public static void releaseArea(ServerLevel level, int chunkX, int chunkZ, int radius) {
+      level.getChunkSource().removeRegionTicket(
+         TicketType.PORTAL, new ChunkPos(chunkX, chunkZ), radius, new BlockPos(chunkX << 4, 0, chunkZ << 4)
+      );
+   }
+
    /** Puts a passenger back on its vehicle. */
    public static void remount(Entity passenger, Entity vehicle) {
       passenger.startRiding(vehicle, true);

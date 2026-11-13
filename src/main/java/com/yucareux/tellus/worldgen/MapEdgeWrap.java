@@ -267,12 +267,27 @@ public final class MapEdgeWrap {
       }
    }
 
+   /** Blocks between an entity's hitbox and the nearest cut ({@code Double.MAX_VALUE} when disabled). */
+   public double distanceToEdge(double blockX, double blockZ, double halfWidth) {
+      if (!this.enabled) {
+         return Double.MAX_VALUE;
+      }
+
+      double east = this.maxXExclusive - (blockX + halfWidth);
+      double west = blockX - halfWidth - this.minX;
+      double south = this.maxZExclusive - (blockZ + halfWidth);
+      double north = blockZ - halfWidth - this.minZ;
+      return Math.min(Math.min(east, west), Math.min(south, north));
+   }
+
    /**
-    * Where an entity heading on as now would come back in when it reaches the nearest cut, or {@code null} while every
-    * cut is more than {@code lookahead} blocks from its hitbox. Used to load the far side before the entity arrives.
+    * Where an entity moving as now would come back in when it reaches the nearest cut, or {@code null} while every cut
+    * is more than {@code lookahead} blocks from its hitbox or it moves toward the nearest one slower than
+    * {@code minimumApproach} blocks a tick. Used to load the far side before the entity arrives. The heading comes
+    * from the motion only, since over the pole the landing point swings across the map as the heading turns.
     */
    public Crossing predict(
-      double blockX, double blockZ, double halfWidth, double motionX, double motionZ, float yaw, double lookahead
+      double blockX, double blockZ, double halfWidth, double motionX, double motionZ, double lookahead, double minimumApproach
    ) {
       if (!this.enabled) {
          return null;
@@ -289,16 +304,24 @@ public final class MapEdgeWrap {
 
       double x = blockX;
       double z = blockZ;
+      double approach;
       if (nearest == north) {
          z = this.minZ + halfWidth;
+         approach = -motionZ;
       } else if (nearest == south) {
          z = this.maxZExclusive - halfWidth;
+         approach = motionZ;
       } else if (nearest == east) {
          x = this.maxXExclusive - halfWidth;
+         approach = motionX;
       } else {
          x = this.minX + halfWidth;
+         approach = -motionX;
       }
-      return this.cross(x, z, halfWidth, motionX, motionZ, yaw);
+      if (!(approach >= minimumApproach) || Math.hypot(motionX, motionZ) < STILL_SPEED) {
+         return null;
+      }
+      return this.cross(x, z, halfWidth, motionX, motionZ, 0.0F);
    }
 
    /** Blocks in 360° of longitude. */

@@ -102,9 +102,22 @@ class MapEdgeCrossingPlannerTest {
    }
 
    @Test
+   void aTeleportIsNotMotion() {
+      // A map teleport moves a player hundreds of thousands of blocks in one tick; that says nothing about a heading.
+      MapEdgeCrossingPlanner planner = new MapEdgeCrossingPlanner();
+      assertNull(planner.plan(PLAYER, LEVEL, 1L, 387_000.0, 64.0, -224_216.0, HALF_WIDTH, 0.0F, WRAP));
+      assertNull(planner.plan(PLAYER, LEVEL, 2L, 86.0, 64.0, WRAP.minZ() + 300.0, HALF_WIDTH, 0.0F, WRAP));
+      assertEquals(0.0, planner.motion(PLAYER).x(), 0.0);
+      assertEquals(0.0, planner.motion(PLAYER).z(), 0.0);
+      assertNull(planner.plan(PLAYER, LEVEL, 3L, 86.0, 64.0, WRAP.minZ() + 299.8, HALF_WIDTH, 0.0F, WRAP));
+      assertEquals(-0.2, planner.motion(PLAYER).z(), 1.0E-9);
+   }
+
+   @Test
    void motionIsClampedAndForgottenEntitiesStartAfresh() {
       MapEdgeCrossingPlanner planner = new MapEdgeCrossingPlanner();
-      double x = WRAP.minX() + 50.0;
+      // Six blocks in a tick: faster than any client reports, but no teleport.
+      double x = WRAP.minX() + 6.5;
       assertNull(planner.plan(PLAYER, LEVEL, 1L, x, 64.0, 0.0, HALF_WIDTH, 90.0F, WRAP));
       MapEdgeCrossingPlanner.Jump jump = planner.plan(PLAYER, LEVEL, 2L, WRAP.minX() + 0.5, 64.0, 0.0, HALF_WIDTH, 90.0F, WRAP);
       assertNotNull(jump);

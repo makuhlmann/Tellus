@@ -339,27 +339,36 @@ class MapEdgeWrapTest {
    }
 
    @Test
-   void arrivalsArePredictedAtTheNearestEdgeWithinTheLookahead() {
+   void arrivalsArePredictedOnlyWhileMovingTowardTheNearestEdge() {
       double blocksPerDegree = EarthProjection.blocksPerDegree(SCALE);
+      double minimum = 0.05;
       // 80 blocks from the east edge, heading east: lands where the crossing itself would.
       double x = WRAP.maxXExclusive() - PLAYER - 80.0;
-      MapEdgeWrap.Crossing predicted = WRAP.predict(x, 4321.0, PLAYER, 0.3, 0.0, -90.0F, 96.0);
+      MapEdgeWrap.Crossing predicted = WRAP.predict(x, 4321.0, PLAYER, 0.3, 0.0, 96.0, minimum);
       assertNotNull(predicted);
       assertEquals(MapEdgeWrap.Crossing.Kind.EAST, predicted.kind());
       assertEquals(WRAP.minX() + LANDING + PLAYER, predicted.x(), 1.0E-9);
       assertEquals(4321.0, predicted.z(), 0.0);
-      assertNull(WRAP.predict(x, 4321.0, PLAYER, 0.3, 0.0, -90.0F, 64.0));
-      assertNull(WRAP.predict(0.0, 0.0, PLAYER, 0.3, 0.0, -90.0F, 768.0));
+      assertEquals(80.0, WRAP.distanceToEdge(x, 4321.0, PLAYER), 1.0E-9);
+      assertNull(WRAP.predict(x, 4321.0, PLAYER, 0.3, 0.0, 64.0, minimum));
+      assertNull(WRAP.predict(0.0, 0.0, PLAYER, 0.3, 0.0, 768.0, minimum));
+      // Standing still, walking along the edge or away from it: nothing to load.
+      assertNull(WRAP.predict(x, 4321.0, PLAYER, 0.0, 0.0, 96.0, minimum));
+      assertNull(WRAP.predict(x, 4321.0, PLAYER, 0.0, 0.3, 96.0, minimum));
+      assertNull(WRAP.predict(x, 4321.0, PLAYER, -0.3, 0.0, 96.0, minimum));
 
-      // Near the north edge the landing depends on the heading, as for the crossing.
+      // Near the north edge the landing depends on the heading of the motion, as for the crossing.
       double z = WRAP.minZ() + PLAYER + 50.0;
-      MapEdgeWrap.Crossing north = WRAP.predict(10.0 * blocksPerDegree, z, PLAYER, 0.2, -0.2, -135.0F, 96.0);
+      MapEdgeWrap.Crossing north = WRAP.predict(10.0 * blocksPerDegree, z, PLAYER, 0.2, -0.2, 96.0, minimum);
       assertNotNull(north);
       assertEquals(MapEdgeWrap.Crossing.Kind.NORTH, north.kind());
       assertEquals(
-         WRAP.cross(10.0 * blocksPerDegree, WRAP.minZ() + PLAYER, PLAYER, 0.2, -0.2, -135.0F).x(), north.x(), 1.0E-9
+         WRAP.cross(10.0 * blocksPerDegree, WRAP.minZ() + PLAYER, PLAYER, 0.2, -0.2, 0.0F).x(), north.x(), 1.0E-9
       );
-      assertNull(MapEdgeWrap.DISABLED.predict(x, 0.0, PLAYER, 0.3, 0.0, -90.0F, 1.0E9));
+      // Looking around while standing at the north edge loads nothing, whatever the facing.
+      assertNull(WRAP.predict(10.0 * blocksPerDegree, z, PLAYER, 0.0, 0.0, 96.0, minimum));
+      assertNull(MapEdgeWrap.DISABLED.predict(x, 0.0, PLAYER, 0.3, 0.0, 1.0E9, minimum));
+      assertEquals(Double.MAX_VALUE, MapEdgeWrap.DISABLED.distanceToEdge(x, 0.0, PLAYER), 0.0);
    }
 
    @Test

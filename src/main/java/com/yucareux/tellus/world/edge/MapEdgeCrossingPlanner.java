@@ -21,6 +21,8 @@ public final class MapEdgeCrossingPlanner {
    static final int MAX_REPEATS = 3;
    /** The most a client can report as one tick of motion (the velocity packet's range). */
    static final double MAX_MOTION_PER_TICK = 3.9;
+   /** Farther than this in one tick is a teleport, not motion: it says nothing about where the entity is heading. */
+   static final double TELEPORT_DISTANCE = 8.0;
 
    private final Map<UUID, Track> tracks = new HashMap<>();
    private final Map<UUID, Pending> pending = new HashMap<>();
@@ -36,7 +38,10 @@ public final class MapEdgeCrossingPlanner {
       double motionX = 0.0;
       double motionY = 0.0;
       double motionZ = 0.0;
-      if (previous != null && previous.level() == level && previous.tick() == tick - 1) {
+      if (previous != null
+         && previous.level() == level
+         && previous.tick() == tick - 1
+         && Math.hypot(x - previous.x(), z - previous.z()) <= TELEPORT_DISTANCE) {
          motionX = clampMotion(x - previous.x());
          motionY = clampMotion(y - previous.y());
          motionZ = clampMotion(z - previous.z());

@@ -54,6 +54,11 @@ public final class MapEdgeTeleportCompat {
       level.getChunkSource().addTicketWithRadius(TicketType.ENDER_PEARL, new ChunkPos(chunkX, chunkZ), radius);
    }
 
+   /** Lets go of an area {@link #holdArea} loaded, before its ticket runs out. */
+   public static void releaseArea(ServerLevel level, int chunkX, int chunkZ, int radius) {
+      level.getChunkSource().removeTicketWithRadius(TicketType.ENDER_PEARL, new ChunkPos(chunkX, chunkZ), radius);
+   }
+
    /** Puts a passenger back on its vehicle. */
    public static void remount(Entity passenger, Entity vehicle) {
       passenger.startRiding(vehicle, true, true);

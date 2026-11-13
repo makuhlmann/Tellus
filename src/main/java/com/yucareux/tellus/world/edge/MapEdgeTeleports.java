@@ -52,8 +52,9 @@ import net.minecraft.world.phys.Vec3;
 public final class MapEdgeTeleports {
    private static final int LANDING_CHECK_TICKS = 200;
    /** Radius, in chunks, loaded around where a player near an edge would land. */
-   private static final int HOLD_RADIUS_CHUNKS = 3;
-   private static final int HOLD_REFRESH_TICKS = 20;
+   private static final int HOLD_RADIUS_CHUNKS = 2;
+   /** Loading ahead only starts once a player moves toward the edge at least this fast (blocks a tick). */
+   private static final double MIN_APPROACH_SPEED = 0.05;
    /** How far ahead of an edge loading starts: ten seconds at the current speed, within these bounds. */
    private static final double LOOKAHEAD_TICKS = 200.0;
    private static final double LOOKAHEAD_MIN_BLOCKS = 96.0;
@@ -73,7 +74,7 @@ public final class MapEdgeTeleports {
 
    private final MapEdgeCrossingPlanner planner = new MapEdgeCrossingPlanner();
    private final Map<UUID, Landing> landings = new HashMap<>();
-   private final Map<UUID, Hold> holds = new HashMap<>();
+   private final Map<UUID, HeldArea> holds = new HashMap<>();
    private final Map<UUID, Long> waitingSince = new HashMap<>();
 
    public void onServerTick(MinecraftServer server) {
@@ -122,14 +123,17 @@ public final class MapEdgeTeleports {
 
       this.planner.retainOnly(sampled);
       this.waitingSince.keySet().retainAll(sampled);
-      this.holds.keySet().retainAll(holding);
+      this.releaseHoldsExcept(holding);
       this.checkLandings(server, tick);
    }
 
    public void onPlayerDisconnect(ServerPlayer player) {
       this.planner.forget(player.getUUID());
       this.landings.remove(player.getUUID());
-      this.holds.remove(player.getUUID());
+      HeldArea held = this.holds.remove(player.getUUID());
+      if (held != null) {
+         release(held);
+      }
    }
 
    public void reset() {
@@ -176,7 +180,10 @@ public final class MapEdgeTeleports {
       return player.isAlive() && !player.isRemoved() && !player.isSleeping() && player.getCamera() == player;
    }
 
-   /** Loads where a player near an edge would land, and notes the stretches of edge where other entities may cross. */
+   /**
+    * Loads where a player approaching an edge would land, at most one area per player (see {@link MapEdgeHoldPolicy}),
+    * and notes the stretches of edge where other entities may cross: beside the player, and around that area.
+    */
    private void prepareFarSide(
       ServerLevel level,
       ServerPlayer player,
@@ -190,27 +197,75 @@ public final class MapEdgeTeleports {
       MapEdgeCrossingPlanner.Motion motion = this.planner.motion(root.getUUID());
       double minimum = root == player ? LOOKAHEAD_MIN_BLOCKS : VEHICLE_LOOKAHEAD_MIN_BLOCKS;
       double lookahead = Mth.clamp(Math.hypot(motion.x(), motion.z()) * LOOKAHEAD_TICKS, minimum, LOOKAHEAD_MAX_BLOCKS);
-      MapEdgeWrap.Crossing landing = wrap.predict(root.getX(), root.getZ(), halfWidth, motion.x(), motion.z(), root.getYRot(), lookahead);
-      if (landing == null) {
+      if (wrap.distanceToEdge(root.getX(), root.getZ(), halfWidth) > lookahead) {
          return;
       }
 
       UUID playerId = player.getUUID();
       holding.add(playerId);
-      int chunkX = Mth.floor(landing.x()) >> 4;
-      int chunkZ = Mth.floor(landing.z()) >> 4;
-      Hold hold = this.holds.get(playerId);
-      if (hold == null
-         || hold.level() != level
-         || tick - hold.tick() >= HOLD_REFRESH_TICKS
-         || Math.abs(hold.chunkX() - chunkX) > 1
-         || Math.abs(hold.chunkZ() - chunkZ) > 1) {
-         MapEdgeTeleportCompat.holdArea(level, chunkX, chunkZ, HOLD_RADIUS_CHUNKS);
-         this.holds.put(playerId, new Hold(level, tick, chunkX, chunkZ));
+      strips.add(EdgeStrip.nearest(wrap, root.getX(), root.getZ()));
+      HeldArea held = this.holds.get(playerId);
+      if (held != null && held.level() != level) {
+         release(held);
+         this.holds.remove(playerId);
+         held = null;
       }
 
-      strips.add(EdgeStrip.nearest(wrap, root.getX(), root.getZ()));
-      strips.add(EdgeStrip.nearest(wrap, landing.x(), landing.z()));
+      MapEdgeWrap.Crossing landing = wrap.predict(
+         root.getX(), root.getZ(), halfWidth, motion.x(), motion.z(), lookahead, MIN_APPROACH_SPEED
+      );
+      if (landing != null) {
+         int chunkX = Mth.floor(landing.x()) >> 4;
+         int chunkZ = Mth.floor(landing.z()) >> 4;
+         MapEdgeHoldPolicy.Hold hold = held == null ? null : held.hold();
+         boolean loaded = held != null && level.getChunkSource().getChunkNow(held.hold().chunkX(), held.hold().chunkZ()) != null;
+         switch (MapEdgeHoldPolicy.decide(hold, chunkX, chunkZ, tick, loaded)) {
+            case PLACE -> held = place(level, chunkX, chunkZ, tick);
+            case MOVE -> {
+               release(held);
+               held = place(level, chunkX, chunkZ, tick);
+            }
+            case REFRESH -> held = refresh(held, tick);
+            case KEEP -> {
+            }
+         }
+      } else if (held != null && tick - held.hold().refreshedTick() >= MapEdgeHoldPolicy.REFRESH_TICKS) {
+         // Standing still or turning at the edge: keep what is loaded, load nothing new.
+         held = refresh(held, tick);
+      }
+
+      if (held != null) {
+         this.holds.put(playerId, held);
+         double centreX = (held.hold().chunkX() << 4) + 8.0;
+         double centreZ = (held.hold().chunkZ() << 4) + 8.0;
+         strips.add(EdgeStrip.nearest(wrap, centreX, centreZ));
+      }
+   }
+
+   private static HeldArea place(ServerLevel level, int chunkX, int chunkZ, long tick) {
+      MapEdgeTeleportCompat.holdArea(level, chunkX, chunkZ, HOLD_RADIUS_CHUNKS);
+      return new HeldArea(level, new MapEdgeHoldPolicy.Hold(chunkX, chunkZ, tick, tick));
+   }
+
+   private static HeldArea refresh(HeldArea held, long tick) {
+      MapEdgeTeleportCompat.holdArea(held.level(), held.hold().chunkX(), held.hold().chunkZ(), HOLD_RADIUS_CHUNKS);
+      return new HeldArea(held.level(), held.hold().refreshed(tick));
+   }
+
+   private static void release(HeldArea held) {
+      MapEdgeTeleportCompat.releaseArea(held.level(), held.hold().chunkX(), held.hold().chunkZ(), HOLD_RADIUS_CHUNKS);
+   }
+
+   /** Lets go of the areas of players no longer near an edge. */
+   private void releaseHoldsExcept(Set<UUID> holding) {
+      Iterator<Map.Entry<UUID, HeldArea>> iterator = this.holds.entrySet().iterator();
+      while (iterator.hasNext()) {
+         Map.Entry<UUID, HeldArea> entry = iterator.next();
+         if (!holding.contains(entry.getKey())) {
+            release(entry.getValue());
+            iterator.remove();
+         }
+      }
    }
 
    private void moveCarryingPlayers(
@@ -484,7 +539,7 @@ public final class MapEdgeTeleports {
    private record Landing(ServerLevel level, long untilTick, double clearance) {
    }
 
-   private record Hold(ServerLevel level, long tick, int chunkX, int chunkZ) {
+   private record HeldArea(ServerLevel level, MapEdgeHoldPolicy.Hold hold) {
    }
 
    private enum Arrival {
