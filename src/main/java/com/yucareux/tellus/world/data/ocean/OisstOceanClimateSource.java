@@ -1,5 +1,6 @@
 package com.yucareux.tellus.world.data.ocean;
 
+import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
@@ -23,18 +24,26 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import net.minecraft.util.Mth;
 
 /**
  * Annual ocean climate (mean sea-surface temperature and peak sea-ice fraction) on the 0.25 degree
  * NOAA OISST v2 grid, from the 1991-2020 monthly long-term means published by NOAA PSL over OPeNDAP.
+ *
+ * <p>Ice counts only in months cold enough for it to be real ({@link #peakFreezingIce}), and coastal waters the grid
+ * counts as land take the climate of the nearest sea cell ({@link #nearestSeaSample}).</p>
  *
  * <p>Cells are fetched and cached in 60x60 blocks (15 x 15 degrees). A PSL request takes a few seconds
  * whatever its size, so one request per large block, instead of one per cell or small block, is what
@@ -61,24 +70,38 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
    private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
    // No sea ice occurs in the 1991-2020 climatology this close to the equator.
    private static final double ICE_FREE_MAX_ABS_LATITUDE = 30.0;
+   // Three degrees of latitude (about 330 km): reaches past the land mask at the inner end of estuaries and fjords.
+   static final int COASTAL_FILL_RADIUS_CELLS = 12;
+   // A month's ice counts only when that month's mean water temperature is this cold (see peakFreezingIce).
+   static final double ICE_MONTH_MAX_SST_C = 1.5;
+   // The cached ice column is the peak over freezing months since this layout; blocks of the old one are fetched again.
+   private static final String CACHE_LAYOUT = "ltm-1991-2020-block" + BLOCK_CELLS + "-freezing-ice";
+   private static final long FAILED_BLOCK_RETRY_NANOS = intProperty("tellus.oisst.failedBlockRetryMs", 60_000) * 1_000_000L;
+   private static final long PROVISIONAL_SECONDS = 10L;
    private static final int MAX_CACHE_CELLS = intProperty("tellus.oisst.cacheCells", 4096);
    private static final int MAX_CACHE_BLOCKS = intProperty("tellus.oisst.cacheBlocks", 64);
    private static final String HTTP_USER_AGENT = "Tellus/1.0 (Minecraft Mod)";
+   private static final Map<Integer, int[]> SEARCH_ORDER = new ConcurrentHashMap<>();
    // A retired dataset answers HTTP 404. Stop asking once that is known this session.
    private static volatile boolean endpointMissing;
    private final Path cacheRoot;
-   private final LoadingCache<OisstOceanClimateSource.CellKey, OisstOceanClimateSource.Sample> cache;
+   private final Cache<OisstOceanClimateSource.CellKey, OisstOceanClimateSource.Sample> cache;
+   private final Cache<OisstOceanClimateSource.CellKey, OisstOceanClimateSource.Sample> provisionalOnline;
+   private final Cache<OisstOceanClimateSource.CellKey, OisstOceanClimateSource.Sample> provisionalCacheOnly;
    private final LoadingCache<OisstOceanClimateSource.BlockKey, OisstOceanClimateSource.Sample[]> blocks;
+   private final Map<OisstOceanClimateSource.BlockKey, Long> failedBlocks = new ConcurrentHashMap<>();
 
    public OisstOceanClimateSource() {
       this.cacheRoot = TellusPlatform.gameDir().resolve("tellus/cache/ocean-oisst-v21");
-      this.cache = CacheBuilder.newBuilder()
+      this.cache = CacheBuilder.newBuilder().maximumSize(MAX_CACHE_CELLS).build();
+      this.provisionalOnline = CacheBuilder.newBuilder()
          .maximumSize(MAX_CACHE_CELLS)
-         .build(new CacheLoader<OisstOceanClimateSource.CellKey, OisstOceanClimateSource.Sample>() {
-            public OisstOceanClimateSource.Sample load(OisstOceanClimateSource.CellKey key) {
-               return OisstOceanClimateSource.this.loadSample(key);
-            }
-         });
+         .expireAfterWrite(PROVISIONAL_SECONDS, TimeUnit.SECONDS)
+         .build();
+      this.provisionalCacheOnly = CacheBuilder.newBuilder()
+         .maximumSize(MAX_CACHE_CELLS)
+         .expireAfterWrite(PROVISIONAL_SECONDS, TimeUnit.SECONDS)
+         .build();
       this.blocks = CacheBuilder.newBuilder()
          .maximumSize(MAX_CACHE_BLOCKS)
          .build(new CacheLoader<OisstOceanClimateSource.BlockKey, OisstOceanClimateSource.Sample[]>() {
@@ -105,27 +128,40 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
          return fallbackForLatitude(lat);
       }
 
-      if (ManagedTerrainNetworkPolicy.isCacheOnly()) {
-         OisstOceanClimateSource.Sample cached = this.cache.getIfPresent(key);
-         if (cached == null) {
-            OisstOceanClimateSource.Sample[] block = this.blocks.getIfPresent(key.block());
-            if (block == null) {
-               block = this.readCachedBlock(key.block());
-            }
-            if (block != null) {
-               cached = block[key.blockOffset()];
-               this.cache.put(key, cached);
-            }
-         }
-         return cached == null ? fallbackForLatitude(lat) : cached;
+      return this.sampleCell(key);
+   }
+
+   /**
+    * A cell's climate, the same whatever order cells and blocks load in. Only a result worked out from every block it
+    * needed is kept for the session; one missing a block (not downloaded yet while Distant Horizons generates from the
+    * cache alone, or a failed download) is kept for a few seconds, separately for each mode, and then worked out again.
+    */
+   private OisstOceanClimateSource.Sample sampleCell(OisstOceanClimateSource.CellKey key) {
+      OisstOceanClimateSource.Sample settled = this.cache.getIfPresent(key);
+      if (settled != null) {
+         return settled;
+      }
+      if (endpointMissing) {
+         return fallbackForLatitude(key.latCenter());
       }
 
-      try {
-         return this.cache.get(key);
-      } catch (ExecutionException | UncheckedExecutionException error) {
-         Tellus.LOGGER.debug("Failed to sample NOAA OISST v2 cell {}", key, error);
-         return fallbackForLatitude(lat);
+      boolean allowFetch = !ManagedTerrainNetworkPolicy.isCacheOnly();
+      Cache<OisstOceanClimateSource.CellKey, OisstOceanClimateSource.Sample> provisional = allowFetch
+         ? this.provisionalOnline
+         : this.provisionalCacheOnly;
+      OisstOceanClimateSource.Sample pending = provisional.getIfPresent(key);
+      if (pending != null) {
+         return pending;
       }
+
+      boolean[] incomplete = new boolean[1];
+      OisstOceanClimateSource.Sample resolved = this.resolveCell(key, allowFetch, incomplete);
+      if (incomplete[0]) {
+         provisional.put(key, resolved);
+      } else {
+         this.cache.put(key, resolved);
+      }
+      return resolved;
    }
 
    public boolean preloadAreaInputs(
@@ -159,9 +195,8 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
       int finished = 0;
       for (OisstOceanClimateSource.CellKey key : cells) {
          try {
-            OisstOceanClimateSource.Sample sample = this.cache.get(key);
-            available &= sample.available();
-         } catch (ExecutionException | RuntimeException error) {
+            available &= this.sampleCell(key).available();
+         } catch (RuntimeException error) {
             available = false;
          }
          finished++;
@@ -172,17 +207,105 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
       return available;
    }
 
-   private OisstOceanClimateSource.Sample loadSample(OisstOceanClimateSource.CellKey key) {
-      if (endpointMissing) {
+   /**
+    * A cell's climate. Cells OISST counts as land, which along coasts include estuaries, bays and fjords that Tellus
+    * fills with sea, take the nearest cell with sea data instead (see {@link #nearestSeaSample}). Sets
+    * {@code incomplete[0]} when a block that search needed could not be read.
+    */
+   private OisstOceanClimateSource.Sample resolveCell(OisstOceanClimateSource.CellKey key, boolean allowFetch, boolean[] incomplete) {
+      OisstOceanClimateSource.Sample[] block = this.blockSamples(key.block(), allowFetch);
+      if (block == null) {
+         incomplete[0] = true;
          return fallbackForLatitude(key.latCenter());
       }
 
-      try {
-         return this.blocks.get(key.block())[key.blockOffset()];
-      } catch (ExecutionException | UncheckedExecutionException error) {
-         Tellus.LOGGER.debug("Falling back from NOAA OISST v2 cell {}", key, error.getCause());
-         return fallbackForLatitude(key.latCenter());
+      OisstOceanClimateSource.Sample own = block[key.blockOffset()];
+      if (own.available()) {
+         return own;
       }
+      OisstOceanClimateSource.Sample nearest = nearestSeaSample(key.latIndex(), key.lonIndex(), (latIndex, lonIndex) -> {
+         OisstOceanClimateSource.Sample[] neighbour = this.blockSamples(
+            new OisstOceanClimateSource.BlockKey(latIndex / BLOCK_CELLS, lonIndex / BLOCK_CELLS), allowFetch
+         );
+         if (neighbour == null) {
+            incomplete[0] = true;
+            return null;
+         }
+         return neighbour[(latIndex % BLOCK_CELLS) * BLOCK_CELLS + lonIndex % BLOCK_CELLS];
+      });
+      return nearest != null ? nearest : own;
+   }
+
+   /** A block's cells: fetched when allowed, otherwise only from memory or the disk cache ({@code null} if neither). */
+   private OisstOceanClimateSource.Sample[] blockSamples(OisstOceanClimateSource.BlockKey key, boolean allowFetch) {
+      if (allowFetch) {
+         Long retryAt = this.failedBlocks.get(key);
+         if (retryAt != null && System.nanoTime() - retryAt < 0L) {
+            return this.blocks.getIfPresent(key);
+         }
+         try {
+            OisstOceanClimateSource.Sample[] block = this.blocks.get(key);
+            this.failedBlocks.remove(key);
+            return block;
+         } catch (ExecutionException | UncheckedExecutionException error) {
+            // Coastal cells near a block edge each ask for the neighbouring block; offline, ask once a minute at most.
+            this.failedBlocks.put(key, System.nanoTime() + FAILED_BLOCK_RETRY_NANOS);
+            Tellus.LOGGER.debug("Falling back from NOAA OISST v2 block {}", key, error.getCause());
+            return null;
+         }
+      }
+
+      OisstOceanClimateSource.Sample[] block = this.blocks.getIfPresent(key);
+      if (block == null) {
+         block = this.readCachedBlock(key);
+         if (block != null) {
+            this.blocks.put(key, block);
+         }
+      }
+      return block;
+   }
+
+   /**
+    * The cell with sea data nearest to a cell OISST counts as land, within {@link #COASTAL_FILL_RADIUS_CELLS} cells
+    * north, south, east or west, or {@code null} when there is none. East-west steps are shortened by the cosine of the
+    * latitude, as they are on the globe, and wrap around the 180th meridian. Equally near cells are tried north to
+    * south, then west to east, so the choice does not depend on the order cells were loaded in.
+    */
+   static OisstOceanClimateSource.Sample nearestSeaSample(int latIndex, int lonIndex, OisstOceanClimateSource.CellLookup lookup) {
+      int[] order = SEARCH_ORDER.computeIfAbsent(latIndex, OisstOceanClimateSource::searchOrder);
+      for (int i = 0; i < order.length; i += 2) {
+         OisstOceanClimateSource.Sample sample = lookup.sample(latIndex + order[i], Math.floorMod(lonIndex + order[i + 1], LON_CELL_COUNT));
+         if (sample != null && sample.available()) {
+            return sample;
+         }
+      }
+      return null;
+   }
+
+   /** The offsets around a cell in this grid row, nearest first, as (latitude, longitude) pairs. */
+   private static int[] searchOrder(int latIndex) {
+      double cosLatitude = Math.cos(Math.toRadians(MIN_GRID_LAT + latIndex * GRID_DEGREES));
+      int side = COASTAL_FILL_RADIUS_CELLS * 2 + 1;
+      List<int[]> offsets = new ArrayList<>(side * side - 1);
+      for (int dLat = COASTAL_FILL_RADIUS_CELLS; dLat >= -COASTAL_FILL_RADIUS_CELLS; dLat--) {
+         for (int dLon = -COASTAL_FILL_RADIUS_CELLS; dLon <= COASTAL_FILL_RADIUS_CELLS; dLon++) {
+            if ((dLat != 0 || dLon != 0) && latIndex + dLat >= 0 && latIndex + dLat < LAT_CELL_COUNT) {
+               offsets.add(new int[]{dLat, dLon});
+            }
+         }
+      }
+      // A stable sort keeps the north-to-south, west-to-east order among equal distances.
+      offsets.sort(Comparator.comparingDouble(offset -> offset[0] * offset[0] + square(offset[1] * cosLatitude)));
+      int[] order = new int[offsets.size() * 2];
+      for (int i = 0; i < offsets.size(); i++) {
+         order[i * 2] = offsets.get(i)[0];
+         order[i * 2 + 1] = offsets.get(i)[1];
+      }
+      return order;
+   }
+
+   private static double square(double value) {
+      return value * value;
    }
 
    private OisstOceanClimateSource.Sample[] loadBlock(OisstOceanClimateSource.BlockKey key) throws IOException {
@@ -196,40 +319,49 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
 
       long generation = TellusCacheRegistry.generation(TellusCacheDomain.OISST);
       double[] sst = this.fetchMonthlyGrid(SST_FILE, "sst", key);
-      double[] ice;
-      try {
-         ice = iceFree(key) ? null : this.fetchMonthlyGrid(ICE_FILE, "icec", key);
-      } catch (IOException error) {
-         // Ice only refines polar biomes; keep the temperatures when it is unavailable.
-         Tellus.LOGGER.debug("NOAA OISST ice block {} unavailable", key, error);
-         ice = null;
-      }
+      // A failed ice download (NOAA PSL answers HTTP 429 when asked too often) fails the block, to be fetched again
+      // later: a block cached without its ice would never turn freezing seas into frozen ocean.
+      double[] ice = iceFree(key) ? null : this.fetchMonthlyGrid(ICE_FILE, "icec", key);
 
       OisstOceanClimateSource.Sample[] samples = new OisstOceanClimateSource.Sample[BLOCK_AREA];
       for (int offset = 0; offset < BLOCK_AREA; offset++) {
          double sum = 0.0;
          int count = 0;
-         double maxIce = 0.0;
          for (int month = 0; month < MONTHS; month++) {
             double value = sst[month * BLOCK_AREA + offset];
             if (Double.isFinite(value)) {
                sum += value;
                count++;
             }
-            if (ice != null) {
-               double iceValue = ice[month * BLOCK_AREA + offset];
-               if (Double.isFinite(iceValue)) {
-                  maxIce = Math.max(maxIce, iceValue);
-               }
-            }
          }
+         double peakIce = ice == null ? 0.0 : peakFreezingIce(sst, ice, offset, BLOCK_AREA);
          double latCenter = MIN_GRID_LAT + (key.latBlock() * BLOCK_CELLS + offset / BLOCK_CELLS) * GRID_DEGREES;
          samples[offset] = count == 0
             ? fallbackForLatitude(latCenter)
-            : new OisstOceanClimateSource.Sample(sum / count, Mth.clamp(maxIce, 0.0, 1.0), true);
+            : new OisstOceanClimateSource.Sample(stored(sum / count), stored(Mth.clamp(peakIce, 0.0, 1.0)), true);
       }
       this.writeCachedBlock(key, samples, generation);
       return samples;
+   }
+
+   /**
+    * A cell's peak monthly ice fraction, counting only months whose mean water temperature is at most
+    * {@link #ICE_MONTH_MAX_SST_C}. Values are month-major with {@code monthStride} cells per month.
+    *
+    * <p>The satellite ice record picks up land along coasts: Kiel Bay reads over 40% ice from December to April, at 2
+    * to 5 C, though it freezes only in hard winters. Where sea ice really forms, the monthly mean temperature stays
+    * near freezing while it lasts (Bothnian Bay, the Gulf of Finland, the Gulf of Riga, Liaodong Bay: 1 C or less).</p>
+    */
+   static double peakFreezingIce(double[] sst, double[] ice, int offset, int monthStride) {
+      double peak = 0.0;
+      for (int month = 0; month < MONTHS; month++) {
+         double temperature = sst[month * monthStride + offset];
+         double fraction = ice[month * monthStride + offset];
+         if (Double.isFinite(temperature) && temperature <= ICE_MONTH_MAX_SST_C && Double.isFinite(fraction)) {
+            peak = Math.max(peak, fraction);
+         }
+      }
+      return peak;
    }
 
    /** Returns the block's 12 monthly values, month-major then row-major; missing values are NaN. */
@@ -372,7 +504,7 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
       StringBuilder value = new StringBuilder(BLOCK_AREA * 16);
       for (OisstOceanClimateSource.Sample sample : samples) {
          if (sample.available()) {
-            value.append(String.format(Locale.ROOT, "%.4f,%.4f%n", sample.meanSstC(), sample.maxIceFraction()));
+            value.append(storedText(sample.meanSstC())).append(',').append(storedText(sample.maxIceFraction())).append('\n');
          } else {
             value.append("NaN,0\n");
          }
@@ -384,10 +516,22 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
       }
    }
 
+   /**
+    * A value as the disk cache keeps it (four decimals), so a block read back in a later session gives exactly the
+    * climate it gave when it was downloaded, even for a sea right at a biome threshold.
+    */
+   static double stored(double value) {
+      return Double.parseDouble(storedText(value));
+   }
+
+   private static String storedText(double value) {
+      return String.format(Locale.ROOT, "%.4f", value);
+   }
+
    private Path cachePath(OisstOceanClimateSource.BlockKey key) {
       return this.cacheRoot
          .resolve(SOURCE_CACHE_ID)
-         .resolve("ltm-1991-2020-block" + BLOCK_CELLS)
+         .resolve(CACHE_LAYOUT)
          .resolve(String.format(Locale.ROOT, "%02d_%02d.txt", key.latBlock(), key.lonBlock()));
    }
 
@@ -456,11 +600,20 @@ public final class OisstOceanClimateSource implements TellusCacheHandle {
    public void clearCache() {
       this.cache.invalidateAll();
       this.cache.cleanUp();
+      this.provisionalOnline.invalidateAll();
+      this.provisionalCacheOnly.invalidateAll();
       this.blocks.invalidateAll();
       this.blocks.cleanUp();
+      this.failedBlocks.clear();
    }
 
    public record Sample(double meanSstC, double maxIceFraction, boolean available) {
+   }
+
+   /** Reads one cell of the global grid, or {@code null} when its block is unavailable. */
+   @FunctionalInterface
+   interface CellLookup {
+      OisstOceanClimateSource.Sample sample(int latIndex, int lonIndex);
    }
 
    private record CellKey(int latIndex, int lonIndex, double latCenter, double lonCenter) {

@@ -207,6 +207,14 @@ This section lets you toggle vanilla structures and world features on or off, su
 - Compatibility: the serialized `ocean_shoreline_blend` setting is retained but is a no-op for oceans. River/lake shoreline blending is unchanged.
 - A mirror can be selected with `tellus.openwaters.endpoint`. It may hold only the tiles OpenWaters stores and answer HTTP 404 for the rest: Tellus then samples the nearest coarser stored zoom, down to the global z8, where the official server would upsample. Those misses are remembered on disk, so delete `tellus/cache/elevation-openwaters` before switching back to the official server.
 
+### NOAA OISST v2.1 sea-surface temperature
+- Source: NOAA Optimum Interpolation SST v2.1, the 1991-2020 monthly long-term means of sea-surface temperature and sea-ice concentration on a 0.25° grid, read from NOAA PSL over OPeNDAP (https://psl.noaa.gov/data/gridded/data.noaa.oisst.v2.highres.html) in 15° blocks.
+- In-game processing: each ocean column takes its cell's climate. Frozen ocean where ice covers at least 15% of the cell in some month, or the mean temperature is -1.5 °C or colder; warm ocean from 23 °C, lukewarm from 13 °C, cold ocean below that; the deep variants from 200 m depth (deep lukewarm for warm water).
+- Ice counts only in months whose mean water temperature is 1.5 °C or colder. Along coasts the satellite ice record picks up land, and without this Kiel Bay, the western Baltic and parts of the German and Danish North Sea coast came out as frozen ocean; seas that really freeze, such as the Bothnian Bay, the Gulf of Riga or Liaodong Bay, stay at about 1 °C or below while they do.
+- Coastal waters the 0.25° grid counts as land, such as estuaries, narrow bays and fjords, take the climate of the nearest cell with sea data within three degrees. They used to take a latitude default, which made every such water between 35° and 55° lukewarm.
+- A cell is the same whatever order chunks load in: one worked out while a block it needs is missing (not downloaded yet while Distant Horizons generates from the cache alone, or a failed download) is worked out again once the block is there. A block whose temperatures or ice cannot be downloaded (NOAA PSL answers HTTP 429 when asked too often) is asked for again a minute later (`tellus.oisst.failedBlockRetryMs`), and never cached without its ice.
+- Newly generated chunks use these rules, so ocean biome borders may show at old chunk borders near coasts in existing worlds. Blocks cached by earlier versions are fetched once more.
+
 ### In-game map tiles
 - Standard map: OpenStreetMap tiles from https://tile.openstreetmap.org/. © OpenStreetMap contributors.
 - Topographic map: OpenTopoMap (https://opentopomap.org/), up to zoom 17. Map data: © OpenStreetMap contributors, SRTM. Map style: © OpenTopoMap (CC-BY-SA).
