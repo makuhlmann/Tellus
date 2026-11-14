@@ -2,6 +2,7 @@ package com.yucareux.tellus.worldgen;
 
 import com.yucareux.tellus.Tellus;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -16,6 +17,8 @@ import java.util.function.Supplier;
  * doing the same here stops players in land that already exists from waiting behind terrain still being built for
  * someone exploring. These are not Minecraft's shared worker threads, because the fill can wait on tile downloads and
  * those workers also parse the saved chunks being loaded.
+ *
+ * <p>It also builds water regions that fluid ticks on the server thread ask about before those regions exist.
  */
 final class TellusTerrainExecutor {
    // Distinct from the "tellus-terrain-" prefetch threads, so a profile tells the two apart.
@@ -37,6 +40,10 @@ final class TellusTerrainExecutor {
 
    static <T> CompletableFuture<T> supply(Supplier<T> task) {
       return CompletableFuture.supplyAsync(task, EXECUTOR);
+   }
+
+   static Executor executor() {
+      return EXECUTOR;
    }
 
    static int threads() {

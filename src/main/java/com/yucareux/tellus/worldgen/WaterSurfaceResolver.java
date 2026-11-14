@@ -167,6 +167,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    private final Cache<Long, WaterRegionData> coastalLegacyRegions = CacheBuilder.newBuilder()
       .maximumSize(intProperty("tellus.waterCoastalRegionCacheSize", 512, 64, 8192)).build();
    private final WaterSolveInputs solveInputs = new WaterSolveInputs(SOLVE_SURFACE_TILES, SOLVE_DEPTH_TILES);
+   // Regions the server thread asked for before they were built; one that fails is tried again after half a minute.
+   private final BackgroundRegionBuilds backgroundRegionBuilds = new BackgroundRegionBuilds(TellusTerrainExecutor.executor(), 30_000L);
 
    public WaterSurfaceResolver(
       TellusLandCoverSource landCoverSource,
@@ -464,13 +466,51 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       return region.falling[index] && region.waterSurface[index] == waterY ? region.terrainSurface[index] + 1 : waterY;
    }
 
-   public boolean shouldSuppressWaterSourceConversion(int x, int y, int z) {
-      if (!this.osmWaterEnabled) return false;
-      WaterRegionData region = this.resolveRegionData(regionCoord(x), regionCoord(z));
+   /** Whether flowing water may turn into a source block, as fluid ticks ask. */
+   public enum SourceConversion {
+      ALLOW,
+      SUPPRESS,
+      /** The block's region is being built; keep the water flowing for now and ask again shortly. */
+      NOT_READY
+   }
+
+   /**
+    * Whether flowing water at this block may turn into a source, answered only from regions already built. Fluid
+    * ticks run on the server thread, and planning a region means terrain and hydrology for 4,096 columns, which would
+    * stall every player. A region not built yet is built in the background and answered {@link SourceConversion#NOT_READY}.
+    */
+   public SourceConversion waterSourceConversion(int x, int y, int z) {
+      if (!this.osmWaterEnabled) return SourceConversion.ALLOW;
+      int regionX = regionCoord(x);
+      int regionZ = regionCoord(z);
+      WaterRegionData region = this.getRegionIfPresent(regionX, regionZ);
+      if (region == null) {
+         this.buildRegionInBackground(regionX, regionZ);
+         return SourceConversion.NOT_READY;
+      }
       int index = region.index(x, z);
-      if (!region.sourceConversionProtection[index]) return false;
-      return this.inlandCoastProtection(regionCoord(x), regionCoord(z)).band()[index] || y == region.waterSurface[index]
-         || region.falling[index] && y > region.terrainSurface[index] && y <= region.waterSurface[index];
+      if (!region.sourceConversionProtection[index]) return SourceConversion.ALLOW;
+      if (y == region.waterSurface[index] || region.falling[index] && y > region.terrainSurface[index] && y <= region.waterSurface[index]) {
+         return SourceConversion.SUPPRESS;
+      }
+      CoastCells coast = this.inlandCoastProtectionIfPresent(regionX, regionZ);
+      if (coast == null) {
+         this.buildRegionInBackground(regionX, regionZ);
+         return SourceConversion.NOT_READY;
+      }
+      return coast.band()[index] ? SourceConversion.SUPPRESS : SourceConversion.ALLOW;
+   }
+
+   private void buildRegionInBackground(int regionX, int regionZ) {
+      this.backgroundRegionBuilds.request(this.regionKey(regionX, regionZ, this.cacheGeneration.get()), () -> {
+         try {
+            this.resolveRegionData(regionX, regionZ);
+            this.inlandCoastProtection(regionX, regionZ);
+         } catch (RuntimeException error) {
+            Tellus.LOGGER.debug("Water region {}:{} is not ready for fluid ticks yet", new Object[]{regionX, regionZ, error});
+            throw error;
+         }
+      });
    }
 
    /** Whether this column's water belongs to a mapped lake rather than a river; false until its map has loaded. */
@@ -1050,14 +1090,32 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       long key = this.regionKey(regionX, regionZ, generation);
       // Every planned column, footprint and seal consults this mask. Recent
       // regions are read without the bounded cache's locks.
-      int slot = (int)(HydrologyBlockCache.mix(key) >>> 58);
-      CoastMask recent = this.recentCoastMasks.get(slot);
-      if (recent != null && recent.regionX == regionX && recent.regionZ == regionZ && recent.generation == generation) {
-         return recent.cells;
+      CoastCells recent = this.recentCoastMask(regionX, regionZ, generation, key);
+      if (recent != null) {
+         return recent;
       }
       CoastCells cells = this.buildInlandCoastProtection(regionX, regionZ, key);
-      this.recentCoastMasks.set(slot, new CoastMask(regionX, regionZ, generation, cells));
+      this.recentCoastMasks.set(coastMaskSlot(key), new CoastMask(regionX, regionZ, generation, cells));
       return cells;
+   }
+
+   /** The region's coast mask if it is already built, without building it. */
+   private CoastCells inlandCoastProtectionIfPresent(int regionX, int regionZ) {
+      long generation = this.cacheGeneration.get();
+      long key = this.regionKey(regionX, regionZ, generation);
+      CoastCells recent = this.recentCoastMask(regionX, regionZ, generation, key);
+      return recent != null ? recent : this.inlandCoastProtection.getIfPresent(key);
+   }
+
+   private CoastCells recentCoastMask(int regionX, int regionZ, long generation, long key) {
+      CoastMask recent = this.recentCoastMasks.get(coastMaskSlot(key));
+      return recent != null && recent.regionX == regionX && recent.regionZ == regionZ && recent.generation == generation
+         ? recent.cells
+         : null;
+   }
+
+   private static int coastMaskSlot(long key) {
+      return (int)(HydrologyBlockCache.mix(key) >>> 58);
    }
 
    private record CoastMask(int regionX, int regionZ, long generation, CoastCells cells) {}
