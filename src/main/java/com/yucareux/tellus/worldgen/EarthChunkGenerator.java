@@ -852,7 +852,8 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    @Override
    public CompletableFuture<ChunkAccess> createBiomes(RandomState random, Blender blender, StructureManager structures, ChunkAccess chunk) {
       this.disableFastSpawnMode();
-      return MinecraftVersionCompat.supplyBackground("init_biomes", () -> this.fillBiomesWithColumnCache(random, chunk));
+      // Biomes read the same tiles as the terrain, so they wait on the same downloads.
+      return TellusTerrainExecutor.supply(() -> this.fillBiomesWithColumnCache(random, chunk));
    }
 
    private ChunkAccess fillBiomesWithColumnCache(RandomState random, ChunkAccess chunk) {
@@ -1175,6 +1176,12 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
    public CompletableFuture<ChunkAccess> fillFromNoise(
        Blender blender,  RandomState random,  StructureManager structures,  ChunkAccess chunk
    ) {
+      // Off the worldgen queue, like vanilla terrain: every saved chunk being loaded waits on that queue too.
+      return TellusTerrainExecutor.supply(() -> this.fillTerrain(blender, random, structures, chunk));
+   }
+
+   /** Fills the chunk's terrain on the calling thread. */
+   public ChunkAccess fillTerrain(Blender blender, RandomState random, StructureManager structures, ChunkAccess chunk) {
       EarthChunkGenerator.FullChunkTrace timingTrace = EarthChunkGenerator.FullChunkPerf.beginTrace("fill", chunk.getPos());
       try {
          this.disableFastSpawnMode();
@@ -1184,7 +1191,7 @@ public final class EarthChunkGenerator extends TellusChunkGeneratorBridge {
          EarthChunkGenerator.ChunkDetailPerf.recordBaseTerrain(EarthChunkGenerator.ChunkDetailPerf.elapsedSince(baseTerrainStartNs));
          endFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_TOTAL, fullChunkStartNs);
          EarthChunkGenerator.FullChunkPerf.finishTrace(timingTrace, "success", null);
-         return Objects.requireNonNull(CompletableFuture.completedFuture(chunk), "completedFuture");
+         return chunk;
       } catch (RuntimeException | Error error) {
          EarthChunkGenerator.FullChunkPerf.finishTrace(timingTrace, "failed", error);
          throw error;

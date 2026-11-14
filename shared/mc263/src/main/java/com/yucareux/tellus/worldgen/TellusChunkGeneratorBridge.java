@@ -61,7 +61,7 @@ public abstract class TellusChunkGeneratorBridge extends ChunkGenerator {
       this.addTellusDebugInfo(info, random, pos);
    }
 
-   public abstract CompletableFuture<ChunkAccess> fillFromNoise(Blender blender, RandomState random, StructureManager structures, ChunkAccess chunk);
+   public abstract ChunkAccess fillTerrain(Blender blender, RandomState random, StructureManager structures, ChunkAccess chunk);
 
    public abstract void applyCarvers(WorldGenRegion region, long seed, RandomState random, BiomeManager biomes, StructureManager structures, ChunkAccess chunk);
 
@@ -70,7 +70,9 @@ public abstract class TellusChunkGeneratorBridge extends ChunkGenerator {
       ChunkAccess chunk, Blender blender, RandomState random, StructureManager structures,
       BiomeManager biomes, WorldGenRegion region, Set<Holder<Biome>> possibleBiomes
    ) {
-      return this.fillFromNoise(blender, random, structures, chunk).thenApply(filled -> {
+      // Vanilla carves in the same task as the fill, away from the worldgen queue that saved chunks load through.
+      return TellusTerrainExecutor.supply(() -> {
+         ChunkAccess filled = this.fillTerrain(blender, random, structures, chunk);
          this.applyCarvers(region, region.getSeed(), random, biomes, structures, filled);
          return filled;
       });
