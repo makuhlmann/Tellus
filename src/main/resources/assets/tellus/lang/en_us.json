@@ -14,6 +14,7 @@
   "gui.earth.map_layer.standard": "Standard",
   "gui.earth.map_layer.topographic": "Topographic",
   "gui.earth.map_layer.transport": "Transport",
+  "gui.earth.map_layer.railway": "Railways",
   "gui.earth.marker_position": "Marker: X %s, Z %s (%s, %s)",
   "gui.earth.teleport": "Teleport",
   "gui.earth.teleport.operators_only": "Only operators can teleport",

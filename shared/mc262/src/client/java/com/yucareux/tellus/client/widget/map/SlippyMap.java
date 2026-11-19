@@ -13,6 +13,9 @@ public class SlippyMap {
    private final int height;
    private final SlippyMap.Camera camera;
    private final SlippyMapTileCache cache = new SlippyMapTileCache();
+   /** Holds the transparent tiles drawn over the base; created the first time a map needs one. */
+   private SlippyMapTileCache overlayCache;
+   private MapTileLayer layer = MapTileLayer.STANDARD;
 
    public SlippyMap(int width, int height) {
       this.width = width;
@@ -32,13 +35,32 @@ public class SlippyMap {
       this.camera.focus(point.getX(clampedZoom), point.getY(clampedZoom), clampedZoom, this.width * scale, this.height * scale);
    }
 
+   public SlippyMapTile getOverlayTile(SlippyMapTilePos pos) {
+      return this.overlayCache.getTile(pos);
+   }
+
+   public boolean hasOverlay() {
+      return this.layer.overlay() != null && this.overlayCache != null;
+   }
+
    public MapTileLayer getLayer() {
-      return this.cache.getLayer();
+      return this.layer;
    }
 
    /** Shows another map; zooms out first if the new map has no tiles at the current zoom. */
    public void setLayer(MapTileLayer layer) {
-      this.cache.setLayer(layer);
+      this.layer = layer;
+      // Maps sharing a base, such as the standard and the railway map, keep its tiles.
+      this.cache.setSource(layer.base());
+      if (layer.overlay() != null) {
+         if (this.overlayCache == null) {
+            this.overlayCache = new SlippyMapTileCache();
+         }
+         this.overlayCache.setSource(layer.overlay());
+      } else if (this.overlayCache != null) {
+         // Cancels the overlay's downloads; without a viewport update it requests no more.
+         this.overlayCache.clearCache();
+      }
       this.camera.maxZoom = layer.maxZoom();
       if (this.camera.getZoom() > layer.maxZoom()) {
          SlippyMapPoint center = this.getCenter();
@@ -81,29 +103,40 @@ public class SlippyMap {
       }
 
       this.cache.updateViewport(visibleTiles);
+      if (this.hasOverlay()) {
+         this.overlayCache.updateViewport(visibleTiles);
+      }
       return visibleTiles;
    }
 
    public List<SlippyMapTilePos> cascadeTiles(List<SlippyMapTilePos> tiles) {
+      return cascadeTiles(this.cache, tiles);
+   }
+
+   public List<SlippyMapTilePos> cascadeOverlayTiles(List<SlippyMapTilePos> tiles) {
+      return cascadeTiles(this.overlayCache, tiles);
+   }
+
+   private static List<SlippyMapTilePos> cascadeTiles(SlippyMapTileCache cache, List<SlippyMapTilePos> tiles) {
       List<SlippyMapTilePos> cascaded = new ArrayList<>(tiles.size());
 
       for (SlippyMapTilePos pos : tiles) {
-         this.cascadeTile(cascaded, pos);
+         cascadeTile(cache, cascaded, pos);
       }
 
       return cascaded;
    }
 
-   private void cascadeTile(List<SlippyMapTilePos> tiles, SlippyMapTilePos pos) {
+   private static void cascadeTile(SlippyMapTileCache cache, List<SlippyMapTilePos> tiles, SlippyMapTilePos pos) {
       int size = 1 << pos.getZoom();
       if (pos.getX() >= 0 && pos.getY() >= 0 && pos.getX() < size && pos.getY() < size) {
-         SlippyMapTile image = this.cache.getTile(pos);
+         SlippyMapTile image = cache.getTile(pos);
          if (image != null && image.isReady()) {
             tiles.add(pos);
          }
 
          if (pos.getZoom() >= 3 && (image == null || !image.isReady() || image.getTransition() < 1.0F)) {
-            this.cascadeTile(tiles, new SlippyMapTilePos(pos.getX() >> 1, pos.getY() >> 1, pos.getZoom() - 1));
+            cascadeTile(cache, tiles, new SlippyMapTilePos(pos.getX() >> 1, pos.getY() >> 1, pos.getZoom() - 1));
          }
       }
    }
@@ -121,7 +154,13 @@ public class SlippyMap {
    }
 
    public void shutdown() {
-      this.cache.shutdown();
+      try {
+         this.cache.shutdown();
+      } finally {
+         if (this.overlayCache != null) {
+            this.overlayCache.shutdown();
+         }
+      }
    }
 
    private static class Camera {

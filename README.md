@@ -39,7 +39,7 @@ Build all targets with `./gradlew build`, or only the new targets with `./gradle
 - OSM roads, buildings, and map features generated with Arnis-derived logic
 - Real-time inspired weather and time systems (optional)
 - Distant Horizons integration for long-distance terrain rendering
-- In-game map for finding real-world places and their block coordinates, with standard, topographic and public transport maps, and teleporting for operators
+- In-game map for finding real-world places and their block coordinates, with standard, topographic, public transport and railway maps, and teleporting for operators
 
 Houses use coordinated facades, framed windows, entrance canopies, and pitched roofs with enclosed attic space. High rises have a wider podium, aligned window bays, and upper setbacks that preserve usable floors. At 1:1 world scale, interiors use footprint-aware rooms, clear door approaches, furnished living and work areas, and continuous stairs with landings, guardrails, and floor openings. Very small multi-storey footprints use a ladder when a complete staircase cannot fit. These changes apply to newly generated chunks; existing buildings are not rebuilt automatically.
 
@@ -70,7 +70,7 @@ The `3.3.1-tellus.1` fork preserves extended-height LODs and Iris compatibility,
 
 ## Commands
 
-- `/tellus map`: Opens the map (also bound to M). Any player can place a marker to see its block coordinates and switch between the standard, topographic and public transport maps. Only players with gamemaster permissions can teleport to the marker. The map keeps its zoom and map type until you leave the world or server.
+- `/tellus map`: Opens the map (also bound to M). Any player can place a marker to see its block coordinates and switch between the standard, topographic, public transport and railway maps. Only players with gamemaster permissions can teleport to the marker. The map keeps its zoom and map type until you leave the world or server.
 - `/tellus weather`: Shows local Tellus weather and time information at your current position.
 - `/tellus config weather enable_realtime_time <true|false>`: Overrides the real-time time setting on the server (requires gamemaster permissions).
 - `/tellus config weather enable_realtime_weather <true|false>`: Overrides the real-time weather setting on the server (requires gamemaster permissions).
@@ -219,6 +219,7 @@ This section lets you toggle vanilla structures and world features on or off, su
 - Standard map: OpenStreetMap tiles from https://tile.openstreetmap.org/. © OpenStreetMap contributors.
 - Topographic map: OpenTopoMap (https://opentopomap.org/), up to zoom 17. Map data: © OpenStreetMap contributors, SRTM. Map style: © OpenTopoMap (CC-BY-SA).
 - Public transport map: ÖPNVKarte by MeMoMaps (https://öpnvkarte.de/), up to zoom 18. © OpenStreetMap contributors; map © MeMoMaps (CC BY-SA 2.0).
+- Railway map: the standard style of OpenRailwayMap (https://www.openrailwaymap.org/), drawn over a faded standard map, up to zoom 19. Data © OpenStreetMap contributors (ODbL); style CC-BY-SA 2.0 OpenRailwayMap and OpenStreetMap. Its 512 px tiles are reduced to 256 px once when downloaded. Usage policy: https://wiki.openstreetmap.org/wiki/OpenRailwayMap/API
 - Tellus downloads only the tiles in view and keeps them in `tellus/cache/map`, so each tile is fetched once.
 
 ### Open-Meteo (weather)

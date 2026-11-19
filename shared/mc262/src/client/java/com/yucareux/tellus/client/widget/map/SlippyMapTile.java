@@ -11,6 +11,7 @@ import net.minecraft.util.Mth;
 
 public class SlippyMapTile {
    private final SlippyMapTilePos pos;
+   private final String textureName;
    private final Object lock = new Object();
    private float transition;
    private volatile NativeImage image;
@@ -18,8 +19,10 @@ public class SlippyMapTile {
    private Identifier location;
    private DynamicTexture texture;
 
-   public SlippyMapTile(SlippyMapTilePos pos) {
+   /** The source id keeps the texture apart from another map's tile at the same position, such as an overlay's. */
+   public SlippyMapTile(SlippyMapTilePos pos, String sourceId) {
       this.pos = pos;
+      this.textureName = "map_" + sourceId + "_" + pos;
    }
 
    public void update(float partialTicks) {
@@ -84,10 +87,10 @@ public class SlippyMapTile {
       synchronized (this.lock) {
          NativeImage image = Objects.requireNonNull(this.image, "tileImage");
          this.image = null;
-         DynamicTexture texture = Objects.requireNonNull(new DynamicTexture(() -> String.format(Locale.ROOT, "tellus_map_%s", this.pos), image), "tileTexture");
+         DynamicTexture texture = Objects.requireNonNull(new DynamicTexture(() -> String.format(Locale.ROOT, "tellus_%s", this.textureName), image), "tileTexture");
          this.texture = texture;
          texture.upload();
-         Identifier id = Objects.requireNonNull(Tellus.id("map_" + this.pos), "tileId");
+         Identifier id = Objects.requireNonNull(Tellus.id(this.textureName), "tileId");
          Minecraft.getInstance().getTextureManager().register(id, texture);
          return id;
       }

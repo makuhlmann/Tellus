@@ -20,6 +20,8 @@ import net.minecraft.util.Mth;
 public class SlippyMapWidget extends AbstractWidget {
    private static final int ATTRIBUTION_PADDING = 10;
    private static final int ATTRIBUTION_LINE_HEIGHT = 10;
+   /** 55% white over the base map: it stays readable while the overlay's coloured lines stand out. */
+   private static final int OVERLAY_BASE_FADE = 0x8CFFFFFF;
    private final SlippyMap map;
    private final List<MapComponent> components = new ArrayList<>();
    private MapComponent dragComponent;
@@ -58,6 +60,16 @@ public class SlippyMapWidget extends AbstractWidget {
       for (SlippyMapTilePos pos : cascadedTiles) {
          SlippyMapTile tile = this.map.getTile(pos);
          this.renderTile(graphics, cameraX, cameraY, cameraZoom, pos, tile, delta);
+      }
+
+      if (this.map.hasOverlay()) {
+         // Fade the base map, so the overlay's lines stand out against it.
+         graphics.fill(this.getX() + 4, this.getY() + 4, this.getX() + this.width - 4, this.getY() + this.height - 4, OVERLAY_BASE_FADE);
+         List<SlippyMapTilePos> overlayTiles = this.map.cascadeOverlayTiles(tiles);
+         overlayTiles.sort(Comparator.comparingInt(SlippyMapTilePos::getZoom));
+         for (SlippyMapTilePos pos : overlayTiles) {
+            this.renderTile(graphics, cameraX, cameraY, cameraZoom, pos, this.map.getOverlayTile(pos), delta);
+         }
       }
 
       SlippyMapPoint mouse = this.getPointUnderMouse(mouseX, mouseY);

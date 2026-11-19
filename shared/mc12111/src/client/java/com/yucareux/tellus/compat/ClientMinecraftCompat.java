@@ -63,6 +63,13 @@ public final class ClientMinecraftCompat {
       );
    }
 
+   /** Like {@link #blit}; the GUI_TEXTURED pipeline already blends half-transparent pixels. */
+   public static void blitTranslucent(
+      GuiGraphics graphics, Object texture, int x, int y, float u, float v, int width, int height, int textureWidth, int textureHeight
+   ) {
+      blit(graphics, texture, x, y, u, v, width, height, textureWidth, textureHeight);
+   }
+
    public static DynamicTexture createDynamicTexture(NativeImage image, String debugName) {
       return new DynamicTexture(() -> String.format(Locale.ROOT, "%s", debugName), image);
    }

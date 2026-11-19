@@ -16,6 +16,8 @@ import net.minecraft.util.Mth;
 public class SlippyMapWidget extends AbstractTellusWidget {
    private static final int ATTRIBUTION_PADDING = 10;
    private static final int ATTRIBUTION_LINE_HEIGHT = 10;
+   /** 55% white over the base map: it stays readable while the overlay's coloured lines stand out. */
+   private static final int OVERLAY_BASE_FADE = 0x8CFFFFFF;
    private final SlippyMap map;
    private final List<MapComponent> components = new ArrayList<>();
    private MapComponent dragComponent;
@@ -53,7 +55,17 @@ public class SlippyMapWidget extends AbstractTellusWidget {
 
       for (SlippyMapTilePos pos : cascadedTiles) {
          SlippyMapTile tile = this.map.getTile(pos);
-         this.renderTile(graphics, cameraX, cameraY, cameraZoom, pos, tile, delta);
+         this.renderTile(graphics, cameraX, cameraY, cameraZoom, pos, tile, delta, false);
+      }
+
+      if (this.map.hasOverlay()) {
+         // Fade the base map, so the overlay's lines stand out against it.
+         graphics.fill(this.getX() + 4, this.getY() + 4, this.getX() + this.width - 4, this.getY() + this.height - 4, OVERLAY_BASE_FADE);
+         List<SlippyMapTilePos> overlayTiles = this.map.cascadeOverlayTiles(tiles);
+         overlayTiles.sort(Comparator.comparingInt(SlippyMapTilePos::getZoom));
+         for (SlippyMapTilePos pos : overlayTiles) {
+            this.renderTile(graphics, cameraX, cameraY, cameraZoom, pos, this.map.getOverlayTile(pos), delta, true);
+         }
       }
 
       SlippyMapPoint mouse = this.getPointUnderMouse(mouseX, mouseY);
@@ -87,7 +99,9 @@ public class SlippyMapWidget extends AbstractTellusWidget {
       }
    }
 
-   private void renderTile(GuiGraphics graphics, int cameraX, int cameraY, int cameraZoom, SlippyMapTilePos pos, SlippyMapTile image, float delta) {
+   private void renderTile(
+      GuiGraphics graphics, int cameraX, int cameraY, int cameraZoom, SlippyMapTilePos pos, SlippyMapTile image, float delta, boolean translucent
+   ) {
       image.update(delta);
       Object location = image.getLocation();
       if (location != null) {
@@ -102,9 +116,12 @@ public class SlippyMapWidget extends AbstractTellusWidget {
          int scaleFactor = Math.max(1, (int)Math.round(Minecraft.getInstance().getWindow().getGuiScale()));
          float scale = 1.0F / scaleFactor;
          ClientMinecraftCompat.scalePose(graphics, scale, scale);
-         ClientMinecraftCompat.blit(
-            graphics, Objects.requireNonNull(location, "tileLocation"), renderX, renderY, 0.0F, 0.0F, size, size, textureSize, textureSize
-         );
+         Object texture = Objects.requireNonNull(location, "tileLocation");
+         if (translucent) {
+            ClientMinecraftCompat.blitTranslucent(graphics, texture, renderX, renderY, 0.0F, 0.0F, size, size, textureSize, textureSize);
+         } else {
+            ClientMinecraftCompat.blit(graphics, texture, renderX, renderY, 0.0F, 0.0F, size, size, textureSize, textureSize);
+         }
          ClientMinecraftCompat.popPose(graphics);
       }
    }

@@ -11,6 +11,7 @@ import com.yucareux.tellus.cache.TellusCacheFiles;
 import com.yucareux.tellus.cache.TellusCacheHandle;
 import com.yucareux.tellus.cache.TellusCacheRegistry;
 import com.yucareux.tellus.world.data.source.MapTileImageValidator;
+import com.yucareux.tellus.world.data.source.MapTileImages;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -54,7 +55,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       new ThreadFactoryBuilder().setDaemon(true).setNameFormat("tellus-map-load-%d").build()
    );
    private final Path cacheRoot = Minecraft.getInstance().gameDirectory.toPath().resolve("tellus/cache/map");
-   private volatile MapTileLayer layer = MapTileLayer.STANDARD;
+   private volatile MapTileSource source = MapTileSource.OPENSTREETMAP;
    private volatile boolean shuttingDown;
    private long viewportRevision;
    private Map<SlippyMapTilePos, Integer> viewportPriorities = Map.of();
@@ -71,7 +72,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       })
       .build(new CacheLoader<SlippyMapTilePos, SlippyMapTileCache.TileEntry>() {
          public SlippyMapTileCache.TileEntry load(SlippyMapTilePos key) {
-            return new SlippyMapTileCache.TileEntry(key);
+            return new SlippyMapTileCache.TileEntry(key, SlippyMapTileCache.this.source);
          }
       });
 
@@ -79,15 +80,15 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       TellusCacheRegistry.register(this);
    }
 
-   public MapTileLayer getLayer() {
-      return this.layer;
+   public MapTileSource getSource() {
+      return this.source;
    }
 
-   /** Drops the tiles of the previous layer; downloads still running for it are cancelled and never shown. */
-   public void setLayer(MapTileLayer layer) {
-      Objects.requireNonNull(layer, "layer");
-      if (layer != this.layer) {
-         this.layer = layer;
+   /** Drops the tiles of the previous source; downloads still running for it are cancelled and never shown. */
+   public void setSource(MapTileSource source) {
+      Objects.requireNonNull(source, "source");
+      if (source != this.source) {
+         this.source = source;
          this.clearCache();
       }
    }
@@ -98,7 +99,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          entry = this.tileCache.getUnchecked(pos);
       } catch (RuntimeException error) {
          Tellus.LOGGER.warn("Failed to create map tile {}", pos, error);
-         return new SlippyMapTile(pos);
+         return new SlippyMapTile(pos, this.source.id());
       }
 
       synchronized (this.schedulingLock) {
@@ -180,7 +181,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
 
       long generation = TellusCacheRegistry.generation(TellusCacheDomain.OSM);
       SlippyMapTileCache.TileLoadTask task = new SlippyMapTileCache.TileLoadTask(
-         entry, this.layer, generation, revision, priority, this.taskSequence.incrementAndGet()
+         entry, this.source, generation, revision, priority, this.taskSequence.incrementAndGet()
       );
       entry.task = task;
       try {
@@ -204,7 +205,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
    private void loadTile(SlippyMapTileCache.TileLoadTask task) {
       NativeImage image;
       try {
-         byte[] data = this.readTileData(task.entry.pos, task.layer, task.generation, task);
+         byte[] data = this.readTileData(task.entry.pos, task.source, task.generation, task);
          if (task.cancelled || data == null) {
             this.finishCancelled(task);
             return;
@@ -274,19 +275,19 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       if (failures == 1) {
          Tellus.LOGGER.warn(
             "Failed to load {} map tile {}; retrying in {} ms",
-            task.layer.providerName(),
+            task.source.providerName(),
             task.entry.pos,
             TimeUnit.NANOSECONDS.toMillis(retryDelay),
             error
          );
       } else {
-         Tellus.LOGGER.debug("{} map tile {} failed again (attempt {})", task.layer.providerName(), task.entry.pos, failures, error);
+         Tellus.LOGGER.debug("{} map tile {} failed again (attempt {})", task.source.providerName(), task.entry.pos, failures, error);
       }
    }
 
-   private byte[] readTileData(SlippyMapTilePos pos, MapTileLayer layer, long generation, SlippyMapTileCache.TileLoadTask task) throws IOException {
+   private byte[] readTileData(SlippyMapTilePos pos, MapTileSource source, long generation, SlippyMapTileCache.TileLoadTask task) throws IOException {
       this.throwIfCancelled(task);
-      Path cachePath = layer.cacheDirectory(this.cacheRoot).resolve(pos.getCacheName());
+      Path cachePath = source.cacheDirectory(this.cacheRoot).resolve(pos.getCacheName());
       if (Files.isRegularFile(cachePath)) {
          if (Files.size(cachePath) <= MAX_TILE_BYTES) {
             try (InputStream input = new BufferedInputStream(Files.newInputStream(cachePath))) {
@@ -305,7 +306,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          }
       }
 
-      URI uri = URI.create(layer.tileUrl(pos));
+      URI uri = URI.create(source.tileUrl(pos));
       URL url = uri.toURL();
       HttpURLConnection connection = (HttpURLConnection)url.openConnection();
       task.attachConnection(connection);
@@ -318,20 +319,22 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          int responseCode = connection.getResponseCode();
          if (responseCode != HttpURLConnection.HTTP_OK) {
             throw new SlippyMapTileCache.TileHttpException(
-               responseCode, layer.providerName() + " tile request failed with HTTP " + responseCode + " for " + pos
+               responseCode, source.providerName() + " tile request failed with HTTP " + responseCode + " for " + pos
             );
          }
          long contentLength = connection.getContentLengthLong();
          if (contentLength > MAX_TILE_BYTES) {
-            throw new IOException(layer.providerName() + " tile response exceeds the safety limit for " + pos);
+            throw new IOException(source.providerName() + " tile response exceeds the safety limit for " + pos);
          }
 
          InputStream stream = Objects.requireNonNull(connection.getInputStream(), "tileStream");
          task.attachStream(stream);
          try (InputStream input = new BufferedInputStream(stream)) {
-            byte[] data = MapTileImageValidator.readBounded(input, MAX_TILE_BYTES);
-            MapTileImageValidator.validatePng(data, MAX_TILE_DIMENSION, MAX_TILE_DIMENSION);
+            byte[] downloaded = MapTileImageValidator.readBounded(input, MAX_TILE_BYTES);
+            MapTileImageValidator.validatePng(downloaded, MAX_TILE_DIMENSION, MAX_TILE_DIMENSION);
             this.throwIfCancelled(task);
+            // Cache the scaled tile, so reading it back from disk needs no scaling.
+            byte[] data = MapTileImages.fitToTileSize(downloaded, SlippyMap.TILE_SIZE);
             if (!this.shuttingDown && TellusCacheRegistry.isCurrent(TellusCacheDomain.OSM, generation)) {
                this.cacheData(cachePath, data, generation);
             }
@@ -442,15 +445,15 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       private int failures;
       private long retryAtNanos;
 
-      private TileEntry(SlippyMapTilePos pos) {
+      private TileEntry(SlippyMapTilePos pos, MapTileSource source) {
          this.pos = pos;
-         this.tile = new SlippyMapTile(pos);
+         this.tile = new SlippyMapTile(pos, source.id());
       }
    }
 
    private final class TileLoadTask implements Runnable, Comparable<SlippyMapTileCache.TileLoadTask> {
       private final SlippyMapTileCache.TileEntry entry;
-      private final MapTileLayer layer;
+      private final MapTileSource source;
       private final long generation;
       private final long revision;
       private final int priority;
@@ -461,9 +464,9 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       private volatile HttpURLConnection connection;
       private volatile InputStream stream;
 
-      private TileLoadTask(SlippyMapTileCache.TileEntry entry, MapTileLayer layer, long generation, long revision, int priority, long sequence) {
+      private TileLoadTask(SlippyMapTileCache.TileEntry entry, MapTileSource source, long generation, long revision, int priority, long sequence) {
          this.entry = entry;
-         this.layer = layer;
+         this.source = source;
          this.generation = generation;
          this.revision = revision;
          this.priority = priority;

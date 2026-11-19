@@ -1,84 +1,59 @@
 package com.yucareux.tellus.client.widget.map;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import net.minecraft.client.gui.Font;
 
-/** The raster maps the slippy map can show. None of these tile servers needs an API key. */
+/** The maps a player can pick: one tile source, or one with transparent tiles from another drawn over it. */
 public enum MapTileLayer {
-   STANDARD(
-      "standard",
-      "OpenStreetMap",
-      "",
-      SlippyMap.MAX_ZOOM,
-      "(c) OpenStreetMap Contributors",
-      "https://tile.openstreetmap.org/%d/%d/%d.png"
-   ),
-   // Above zoom 17 OpenTopoMap answers with an image reading "max zoom layer = 17", which must never be cached.
+   STANDARD("standard", MapTileSource.OPENSTREETMAP, null, "(c) OpenStreetMap Contributors"),
    TOPOGRAPHIC(
       "topographic",
-      "OpenTopoMap",
-      "opentopomap",
-      17,
-      "Map data: (c) OpenStreetMap Contributors, SRTM | Map style: (c) OpenTopoMap (CC-BY-SA)",
-      "https://a.tile.opentopomap.org/%d/%d/%d.png",
-      "https://b.tile.opentopomap.org/%d/%d/%d.png",
-      "https://c.tile.opentopomap.org/%d/%d/%d.png"
+      MapTileSource.OPENTOPOMAP,
+      null,
+      "Map data: (c) OpenStreetMap Contributors, SRTM | Map style: (c) OpenTopoMap (CC-BY-SA)"
    ),
-   TRANSPORT(
-      "transport",
-      "\u00d6PNVKarte",
-      "opnvkarte",
-      18,
-      "(c) OpenStreetMap Contributors | Map: (c) MeMoMaps (CC-BY-SA)",
-      "https://tile.memomaps.de/tilegen/%d/%d/%d.png"
+   TRANSPORT("transport", MapTileSource.OPNVKARTE, null, "(c) OpenStreetMap Contributors | Map: (c) MeMoMaps (CC-BY-SA)"),
+   RAILWAY(
+      "railway",
+      MapTileSource.OPENSTREETMAP,
+      MapTileSource.OPENRAILWAYMAP,
+      "Data (c) OpenStreetMap Contributors | Style: CC-BY-SA 2.0 OpenRailwayMap and OpenStreetMap"
    );
 
    private static final String ATTRIBUTION_SEPARATOR = " | ";
    private final String id;
-   private final String providerName;
-   private final String cacheDirectory;
-   private final int maxZoom;
+   private final MapTileSource base;
+   private final MapTileSource overlay;
    private final String attribution;
-   private final String[] urlTemplates;
 
-   MapTileLayer(String id, String providerName, String cacheDirectory, int maxZoom, String attribution, String... urlTemplates) {
+   MapTileLayer(String id, MapTileSource base, MapTileSource overlay, String attribution) {
       this.id = id;
-      this.providerName = providerName;
-      this.cacheDirectory = cacheDirectory;
-      this.maxZoom = maxZoom;
+      this.base = base;
+      this.overlay = overlay;
       this.attribution = attribution;
-      this.urlTemplates = urlTemplates;
    }
 
    public String translationKey() {
       return "gui.earth.map_layer." + this.id;
    }
 
-   public String providerName() {
-      return this.providerName;
+   public MapTileSource base() {
+      return this.base;
+   }
+
+   /** The source drawn over the base, or null when the map has none. */
+   public MapTileSource overlay() {
+      return this.overlay;
    }
 
    public int maxZoom() {
-      return this.maxZoom;
+      return this.overlay == null ? this.base.maxZoom() : Math.min(this.base.maxZoom(), this.overlay.maxZoom());
    }
 
    public MapTileLayer next() {
       MapTileLayer[] layers = values();
       return layers[(this.ordinal() + 1) % layers.length];
-   }
-
-   public String tileUrl(SlippyMapTilePos pos) {
-      // A tile always comes from the same host, so the HTTP cache of each host stays useful.
-      int host = Math.floorMod(pos.getX() + pos.getY(), this.urlTemplates.length);
-      return String.format(Locale.ROOT, this.urlTemplates[host], pos.getZoom(), pos.getX(), pos.getY());
-   }
-
-   /** OpenStreetMap tiles stay in the cache root, where earlier versions stored them. */
-   public Path cacheDirectory(Path cacheRoot) {
-      return this.cacheDirectory.isEmpty() ? cacheRoot : cacheRoot.resolve(this.cacheDirectory);
    }
 
    /** The attribution on one line, or split into its parts when the line is wider than the map. */

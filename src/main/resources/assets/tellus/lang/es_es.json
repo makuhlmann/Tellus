@@ -14,6 +14,7 @@
   "gui.earth.map_layer.standard": "Estándar",
   "gui.earth.map_layer.topographic": "Topográfico",
   "gui.earth.map_layer.transport": "Transporte",
+  "gui.earth.map_layer.railway": "Ferroviario",
   "gui.earth.marker_position": "Marcador: X %s, Z %s (%s, %s)",
   "gui.earth.teleport": "Teletransportar",
   "gui.earth.teleport.operators_only": "Solo los operadores pueden teletransportarse",

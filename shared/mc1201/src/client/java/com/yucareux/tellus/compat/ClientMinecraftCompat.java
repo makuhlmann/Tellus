@@ -1,5 +1,6 @@
 package com.yucareux.tellus.compat;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.Tesselator;
@@ -78,6 +79,16 @@ public final class ClientMinecraftCompat {
       GuiGraphics graphics, Object texture, int x, int y, float u, float v, int width, int height, int textureWidth, int textureHeight
    ) {
       graphics.blit((ResourceLocation)texture, x, y, 0, u, v, width, height, textureWidth, textureHeight);
+   }
+
+   /** Like {@link #blit}, but blends half-transparent pixels over what is already drawn instead of drawing them opaque. */
+   public static void blitTranslucent(
+      GuiGraphics graphics, Object texture, int x, int y, float u, float v, int width, int height, int textureWidth, int textureHeight
+   ) {
+      RenderSystem.enableBlend();
+      RenderSystem.defaultBlendFunc();
+      blit(graphics, texture, x, y, u, v, width, height, textureWidth, textureHeight);
+      RenderSystem.disableBlend();
    }
 
    public static DynamicTexture createDynamicTexture(NativeImage image, String debugName) {
