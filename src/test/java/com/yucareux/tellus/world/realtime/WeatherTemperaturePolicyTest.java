@@ -2,6 +2,7 @@ package com.yucareux.tellus.world.realtime;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -50,5 +51,36 @@ class WeatherTemperaturePolicyTest {
       assertFalse(WeatherTemperaturePolicy.canLakeFreeze(-10.0F, Float.NaN));
       assertFalse(WeatherTemperaturePolicy.canLakeIceMelt(Float.NaN, 10.0F));
       assertFalse(WeatherTemperaturePolicy.canLakeIceMelt(10.0F, Float.NaN));
+   }
+
+   @Test
+   void snowNeverFallsAndMeltsAtTheSameTemperature() {
+      for (float temperatureC = -10.0F; temperatureC <= 15.0F; temperatureC += 0.05F) {
+         assertFalse(
+            WeatherTemperaturePolicy.shouldSnow(temperatureC) && WeatherTemperaturePolicy.snowMeltChance(temperatureC) > 0.0F,
+            "snow both falls and melts at " + temperatureC + " °C"
+         );
+      }
+   }
+
+   @Test
+   void snowMeltsJustAboveTheSnowfallCutoff() {
+      assertEquals(0.0F, WeatherTemperaturePolicy.snowMeltChance(2.0F));
+      assertTrue(WeatherTemperaturePolicy.snowMeltChance(2.1F) > 0.0F);
+   }
+
+   @Test
+   void warmerAirMeltsSnowMoreOftenUpToEveryTick() {
+      float mild = WeatherTemperaturePolicy.snowMeltChance(3.0F);
+      float warm = WeatherTemperaturePolicy.snowMeltChance(6.0F);
+      assertTrue(mild < warm);
+      assertEquals(0.5F, warm);
+      assertEquals(1.0F, WeatherTemperaturePolicy.snowMeltChance(10.0F));
+      assertEquals(1.0F, WeatherTemperaturePolicy.snowMeltChance(25.0F));
+   }
+
+   @Test
+   void missingTemperatureMeltsNoSnow() {
+      assertEquals(0.0F, WeatherTemperaturePolicy.snowMeltChance(Float.NaN));
    }
 }

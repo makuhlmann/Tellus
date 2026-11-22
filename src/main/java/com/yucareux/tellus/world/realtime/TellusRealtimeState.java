@@ -97,6 +97,15 @@ public final class TellusRealtimeState {
       return WeatherTemperaturePolicy.canLakeIceMelt(realWorldTemperatureC(pos), recentTemperatureGrid.sample(pos.getX(), pos.getZ()));
    }
 
+   // Snow Tellus is laying itself stays: while real-time weather snows, and where recent snowfall says it still lies.
+   public static float snowMeltChance(BlockPos pos) {
+      if (pos == null || shouldApplySnow(pos.getX(), pos.getZ())) {
+         return 0.0F;
+      }
+
+      return WeatherTemperaturePolicy.snowMeltChance(realWorldTemperatureC(pos));
+   }
+
    public static Precipitation precipitationOverride(boolean biomeHasPrecipitation, BlockPos pos) {
       TellusRealtimeState.PrecipitationMode mode = precipitationMode;
       if (weatherEnabled && mode != TellusRealtimeState.PrecipitationMode.CLEAR) {

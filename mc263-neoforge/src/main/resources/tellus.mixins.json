@@ -6,6 +6,7 @@
 		"DistantHorizonsChunkUpdateMixin",
 		"BiomeFreezeMixin",
 		"IceBlockMeltMixin",
+		"SnowLayerMeltMixin",
 		"BiomePrecipitationMixin",
 		"BlockPosHighYMixin",
 		"DimensionTypeHighYMixin",

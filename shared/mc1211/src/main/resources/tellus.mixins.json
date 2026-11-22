@@ -5,6 +5,7 @@
 	"mixins": [
 		"BiomeFreezeMixin",
 		"IceBlockMeltMixin",
+		"SnowLayerMeltMixin",
 		"BiomePrecipitationMixin",
 		"BlockPosHighYMixin",
 		"ChunkSerializerHighYMixin",
