@@ -32,6 +32,7 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.client.Minecraft;
 
@@ -44,6 +45,9 @@ public class SlippyMapTileCache implements TellusCacheHandle {
    private static final long RETRY_BASE_NANOS = TimeUnit.SECONDS.toNanos(1L);
    private static final long RETRY_MAX_NANOS = TimeUnit.SECONDS.toNanos(30L);
    private static final String USER_AGENT = "Tellus-Minecraft-Mod (+https://github.com/Yucareux/Tellus)";
+   private static final AtomicInteger NEXT_CACHE_ID = new AtomicInteger();
+   /** Part of every tile's texture name: the minimap and the map screen hold caches at the same time. */
+   private final int cacheId = NEXT_CACHE_ID.incrementAndGet();
    private final Object schedulingLock = new Object();
    private final AtomicLong taskSequence = new AtomicLong();
    private final ThreadPoolExecutor loadingService = new ThreadPoolExecutor(
@@ -72,7 +76,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       })
       .build(new CacheLoader<SlippyMapTilePos, SlippyMapTileCache.TileEntry>() {
          public SlippyMapTileCache.TileEntry load(SlippyMapTilePos key) {
-            return new SlippyMapTileCache.TileEntry(key, SlippyMapTileCache.this.source);
+            return new SlippyMapTileCache.TileEntry(key, SlippyMapTileCache.this.textureKey(SlippyMapTileCache.this.source));
          }
       });
 
@@ -82,6 +86,10 @@ public class SlippyMapTileCache implements TellusCacheHandle {
 
    public MapTileSource getSource() {
       return this.source;
+   }
+
+   private String textureKey(MapTileSource tileSource) {
+      return tileSource.id() + "_" + this.cacheId;
    }
 
    /** Drops the tiles of the previous source; downloads still running for it are cancelled and never shown. */
@@ -99,7 +107,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          entry = this.tileCache.getUnchecked(pos);
       } catch (RuntimeException error) {
          Tellus.LOGGER.warn("Failed to create map tile {}", pos, error);
-         return new SlippyMapTile(pos, this.source.id());
+         return new SlippyMapTile(pos, this.textureKey(this.source));
       }
 
       synchronized (this.schedulingLock) {
@@ -445,9 +453,9 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       private int failures;
       private long retryAtNanos;
 
-      private TileEntry(SlippyMapTilePos pos, MapTileSource source) {
+      private TileEntry(SlippyMapTilePos pos, String textureKey) {
          this.pos = pos;
-         this.tile = new SlippyMapTile(pos, source.id());
+         this.tile = new SlippyMapTile(pos, textureKey);
       }
    }
 

@@ -55,6 +55,11 @@ public final class ClientMinecraftCompat {
       graphics.pose().scale(x, y);
    }
 
+   /** Clockwise on screen, since GUI y points down. */
+   public static void rotatePose(GuiGraphics graphics, float radians) {
+      graphics.pose().rotate(radians);
+   }
+
    public static void blit(
       GuiGraphics graphics, Object texture, int x, int y, float u, float v, int width, int height, int textureWidth, int textureHeight
    ) {

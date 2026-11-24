@@ -28,6 +28,7 @@ public class SlippyMapWidget extends AbstractWidget {
    private boolean mouseDown;
    private boolean mouseDragged;
    private int attributionBottomPadding;
+   private boolean attributionBelow;
 
    public SlippyMapWidget(int x, int y, int width, int height) {
       super(x, y, width, height, Component.empty());
@@ -45,6 +46,11 @@ public class SlippyMapWidget extends AbstractWidget {
 
    public void setAttributionBottomPadding(int padding) {
       this.attributionBottomPadding = Math.max(0, padding);
+   }
+
+   /** Writes the attribution wrapped under the map instead of over its corner, for maps too small to hold it. */
+   public void setAttributionBelow(boolean below) {
+      this.attributionBelow = below;
    }
 
    protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
@@ -87,6 +93,16 @@ public class SlippyMapWidget extends AbstractWidget {
 
    private void drawAttribution(GuiGraphicsExtractor graphics) {
       Font font = Minecraft.getInstance().font;
+      if (this.attributionBelow) {
+         List<String> lines = this.map.getLayer().wrappedAttributionLines(font, this.width - 4);
+         int top = this.getY() + this.height;
+         graphics.fill(this.getX(), top, this.getX() + this.width, top + lines.size() * ATTRIBUTION_LINE_HEIGHT + 2, -1072689136);
+         for (int index = 0; index < lines.size(); index++) {
+            graphics.text(font, lines.get(index), this.getX() + 2, top + 2 + index * ATTRIBUTION_LINE_HEIGHT, -1);
+         }
+         return;
+      }
+
       List<String> lines = this.map.getLayer().attributionLines(font, this.width - 8 - ATTRIBUTION_PADDING * 2);
       int textWidth = 0;
       for (String line : lines) {

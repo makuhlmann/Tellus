@@ -56,6 +56,27 @@ public enum MapTileLayer {
       return layers[(this.ordinal() + 1) % layers.length];
    }
 
+   /** The attribution word-wrapped to the given width, each of its parts starting on a new line. */
+   public List<String> wrappedAttributionLines(Font font, int maxWidth) {
+      List<String> lines = new ArrayList<>();
+      for (String part : this.attribution.split(java.util.regex.Pattern.quote(ATTRIBUTION_SEPARATOR))) {
+         String line = "";
+         for (String word : part.split(" ")) {
+            String candidate = line.isEmpty() ? word : line + " " + word;
+            if (!line.isEmpty() && font.width(candidate) > maxWidth) {
+               lines.add(line);
+               line = word;
+            } else {
+               line = candidate;
+            }
+         }
+         if (!line.isEmpty()) {
+            lines.add(line);
+         }
+      }
+      return lines;
+   }
+
    /** The attribution on one line, or split into its parts when the line is wider than the map. */
    public List<String> attributionLines(Font font, int maxWidth) {
       if (font.width(this.attribution) <= maxWidth || !this.attribution.contains(ATTRIBUTION_SEPARATOR)) {

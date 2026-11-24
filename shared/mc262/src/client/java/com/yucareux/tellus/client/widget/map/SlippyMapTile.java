@@ -19,10 +19,10 @@ public class SlippyMapTile {
    private Identifier location;
    private DynamicTexture texture;
 
-   /** The source id keeps the texture apart from another map's tile at the same position, such as an overlay's. */
-   public SlippyMapTile(SlippyMapTilePos pos, String sourceId) {
+   /** The key keeps the texture apart from other tiles at the same position: an overlay's, or another map's. */
+   public SlippyMapTile(SlippyMapTilePos pos, String textureKey) {
       this.pos = pos;
-      this.textureName = "map_" + sourceId + "_" + pos;
+      this.textureName = "map_" + textureKey + "_" + pos;
    }
 
    public void update(float partialTicks) {

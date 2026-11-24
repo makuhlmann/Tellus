@@ -24,4 +24,8 @@ public final class ClientInputCompat {
    public static KeyMapping openMapKey(KeyMapping.Category category) {
       return new KeyMapping("key.tellus.open_map", InputConstants.Type.KEYSYM, 77, category);
    }
+
+   public static KeyMapping toggleMinimapKey(KeyMapping.Category category) {
+      return new KeyMapping("key.tellus.toggle_minimap", InputConstants.Type.KEYSYM, 78, category);
+   }
 }

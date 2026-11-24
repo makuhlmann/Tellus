@@ -14,7 +14,6 @@ import com.yucareux.tellus.integration.voxy.TellusVoxyPregenManager;
 import com.yucareux.tellus.compat.MinecraftRelease;
 import com.yucareux.tellus.compat.MinecraftVersionCompat;
 import com.yucareux.tellus.compat.TellusMinecraftCompat;
-import com.yucareux.tellus.network.GeoTpOpenMapPayload;
 import com.yucareux.tellus.network.GeoTpTeleportPayload;
 import com.yucareux.tellus.network.ManagedTerrainStatusPayload;
 import com.yucareux.tellus.network.ManagedTerrainViewPayload;
@@ -92,6 +91,7 @@ public class TellusCommon {
    private static final TellusVoxyPregenManager VOXY_PREGEN_MANAGER = new TellusVoxyPregenManager();
    private static final ManagedTerrainDownloadManager MANAGED_TERRAIN_DOWNLOAD_MANAGER = new ManagedTerrainDownloadManager();
    private static final MapEdgeTeleports MAP_EDGE_TELEPORTS = new MapEdgeTeleports();
+   private static final MapWorldInfoBroadcaster MAP_WORLD_INFO = new MapWorldInfoBroadcaster();
    private static final Map<UUID, CompletableFuture<BlockPos>> GEO_TELEPORT_LOOKUPS = new ConcurrentHashMap<>();
    private static final Map<UUID, TellusCommon.TeleportProgress> GEO_TELEPORT_PROGRESS = new ConcurrentHashMap<>();
    private static volatile Boolean teleportProgressOverride;
@@ -273,8 +273,10 @@ public class TellusCommon {
          VOXY_PREGEN_MANAGER.shutdown();
          MANAGED_TERRAIN_DOWNLOAD_MANAGER.reset();
          MAP_EDGE_TELEPORTS.reset();
+         MAP_WORLD_INFO.reset();
       });
       runtime.onServerTick(REALTIME_MANAGER::onServerTick);
+      runtime.onServerTick(MAP_WORLD_INFO::onServerTick);
       runtime.onServerTick(VOXY_PREGEN_MANAGER::onServerTick);
       runtime.onServerTick(server -> GEO_TELEPORT_PROGRESS.values().forEach(TellusCommon.TeleportProgress::update));
       runtime.onServerTick(MANAGED_TERRAIN_DOWNLOAD_MANAGER::onServerTick);
@@ -304,6 +306,7 @@ public class TellusCommon {
       runtime.onPlayerJoin(REALTIME_MANAGER::onPlayerJoin);
       runtime.onPlayerDisconnect(MANAGED_TERRAIN_DOWNLOAD_MANAGER::onPlayerDisconnect);
       runtime.onPlayerDisconnect(MAP_EDGE_TELEPORTS::onPlayerDisconnect);
+      runtime.onPlayerDisconnect(MAP_WORLD_INFO::onPlayerDisconnect);
       if (TellusPlatform.isModLoaded("distanthorizons")) {
          DistantHorizonsIntegration.bootstrap();
       }
@@ -325,14 +328,8 @@ public class TellusCommon {
          return 0;
       } else {
          ServerLevel level = MinecraftVersionCompat.serverLevel(player);
-         if (level.getChunkSource().getGenerator() instanceof EarthChunkGenerator earthGenerator) {
-            double latitude = clampLatitude(earthGenerator.latitudeFromBlock(player.getZ()));
-            double longitude = clampLongitude(earthGenerator.longitudeFromBlock(player.getX()));
-            // The map only uses this to offer the teleport button; handleGeoTeleport checks the permission itself.
-            boolean canTeleport = TellusMinecraftCompat.hasGamemasterPermission(player.createCommandSourceStack());
-            TellusPlatform.sendGeoTpOpenMapPayload(
-               player, new GeoTpOpenMapPayload(latitude, longitude, earthGenerator.settings().worldScale(), canTeleport)
-            );
+         if (level.getChunkSource().getGenerator() instanceof EarthChunkGenerator) {
+            TellusPlatform.sendGeoTpOpenMapPayload(player, MapWorldInfoBroadcaster.payloadFor(player, true));
             return 1;
          } else {
             source.sendFailure(Component.translatable("tellus.command.geotp.tellus_world_only"));

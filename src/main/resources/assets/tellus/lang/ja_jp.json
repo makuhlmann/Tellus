@@ -446,5 +446,11 @@
   "tellus.preload.detail.ocean_climate": "海洋気候 %s/%s",
   "tellus.preload.detail.unexpected_error": "予期しないエラーで地形のプリロードが中断されました。詳細はログを確認してください。",
   "key.category.tellus.controls": "Tellus",
-  "key.tellus.open_map": "Tellus マップを開く"
+  "key.tellus.open_map": "Tellus マップを開く",
+  "key.tellus.toggle_minimap": "Tellus ミニマップの表示切替",
+  "gui.earth.minimap.on": "ミニマップ: オン",
+  "gui.earth.minimap.off": "ミニマップ: オフ",
+  "tellus.minimap.on": "ミニマップ オン",
+  "tellus.minimap.off": "ミニマップ オフ",
+  "tellus.minimap.not_tellus": "ミニマップ オン（Tellus ワールドで表示されます）"
 }

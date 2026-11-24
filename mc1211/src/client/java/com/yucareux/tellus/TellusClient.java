@@ -1,5 +1,6 @@
 package com.yucareux.tellus;
 
+import com.yucareux.tellus.client.hud.TellusMinimap;
 import com.yucareux.tellus.client.screen.EarthMapSession;
 import com.yucareux.tellus.client.screen.EarthTeleportScreen;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainClientState;
@@ -36,6 +37,12 @@ public class TellusClient implements ClientModInitializer {
       GLFW.GLFW_KEY_M,
       FabricClientVersionCompat.keyCategory()
    );
+   private static final KeyMapping TOGGLE_MINIMAP_KEY = new KeyMapping(
+      "key.tellus.toggle_minimap",
+      InputConstants.Type.KEYSYM,
+      GLFW.GLFW_KEY_N,
+      FabricClientVersionCompat.keyCategory()
+   );
    private int managedTerrainViewUpdateTicks;
 
    @Override
@@ -45,11 +52,15 @@ public class TellusClient implements ClientModInitializer {
          (latitude, longitude) -> ClientPlayNetworking.send(new GeoTpTeleportPayload(latitude, longitude))
       );
       KeyBindingHelper.registerKeyBinding(OPEN_MAP_KEY);
+      KeyBindingHelper.registerKeyBinding(TOGGLE_MINIMAP_KEY);
       FabricClientVersionCompat.registerHud();
       ClientPlayNetworking.registerGlobalReceiver(Objects.requireNonNull(GeoTpOpenMapPayload.TYPE, "GeoTpOpenMapPayload.TYPE"), (payload, context) -> context.client().execute(() -> {
-         Minecraft minecraft = context.client();
-         Screen parent = minecraft.screen;
-         minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude(), payload.worldScale(), payload.canTeleport()));
+         EarthMapSession.setWorldScale(payload.worldScale());
+         if (payload.openMap()) {
+            Minecraft minecraft = context.client();
+            Screen parent = minecraft.screen;
+            minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude(), payload.worldScale(), payload.canTeleport()));
+         }
       }));
       ClientPlayNetworking.registerGlobalReceiver(
          Objects.requireNonNull(TellusWeatherPayload.TYPE, "TellusWeatherPayload.TYPE"),
@@ -83,6 +94,9 @@ public class TellusClient implements ClientModInitializer {
             if (client.screen == null && client.player != null && client.getConnection() != null) {
                client.getConnection().sendCommand("tellus map");
             }
+         }
+         while (TOGGLE_MINIMAP_KEY.consumeClick()) {
+            TellusMinimap.toggle();
          }
 
          if (client.player != null && ++this.managedTerrainViewUpdateTicks >= 40) {

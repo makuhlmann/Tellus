@@ -1,6 +1,7 @@
 package com.yucareux.tellus.compat;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.math.Axis;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.Tesselator;
@@ -73,6 +74,11 @@ public final class ClientMinecraftCompat {
 
    public static void scalePose(GuiGraphics graphics, float x, float y) {
       graphics.pose().scale(x, y, 1.0F);
+   }
+
+   /** Clockwise on screen, since GUI y points down. */
+   public static void rotatePose(GuiGraphics graphics, float radians) {
+      graphics.pose().mulPose(Axis.ZP.rotation(radians));
    }
 
    public static void blit(

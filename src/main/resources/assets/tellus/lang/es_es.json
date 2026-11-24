@@ -446,5 +446,11 @@
   "tellus.preload.detail.ocean_climate": "Clima oceánico: %s/%s",
   "tellus.preload.detail.unexpected_error": "Un error inesperado interrumpió la precarga del terreno. Consulta el registro para obtener más información.",
   "key.category.tellus.controls": "Tellus",
-  "key.tellus.open_map": "Abrir mapa de Tellus"
+  "key.tellus.open_map": "Abrir mapa de Tellus",
+  "key.tellus.toggle_minimap": "Mostrar/ocultar minimapa de Tellus",
+  "gui.earth.minimap.on": "Minimapa: Sí",
+  "gui.earth.minimap.off": "Minimapa: No",
+  "tellus.minimap.on": "Minimapa activado",
+  "tellus.minimap.off": "Minimapa desactivado",
+  "tellus.minimap.not_tellus": "Minimapa activado; se muestra en mundos de Tellus"
 }

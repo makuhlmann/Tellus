@@ -446,5 +446,11 @@
   "tellus.preload.detail.ocean_climate": "Ocean climate %s/%s",
   "tellus.preload.detail.unexpected_error": "An unexpected error interrupted terrain preloading. Check the log for details.",
   "key.category.tellus.controls": "Tellus",
-  "key.tellus.open_map": "Open Tellus Map"
+  "key.tellus.open_map": "Open Tellus Map",
+  "key.tellus.toggle_minimap": "Show/Hide Tellus Minimap",
+  "gui.earth.minimap.on": "Minimap: On",
+  "gui.earth.minimap.off": "Minimap: Off",
+  "tellus.minimap.on": "Minimap on",
+  "tellus.minimap.off": "Minimap off",
+  "tellus.minimap.not_tellus": "Minimap on; it shows in Tellus worlds"
 }

@@ -13,6 +13,19 @@ class EarthProjectionTest {
    }
 
    @Test
+   void mapZoomSpansTheRequestedBlocksAtAnyWorldScale() {
+      // At zoom z a map pixel covers circumference / (256 * 2^z) metres; a block covers worldScale metres.
+      for (double worldScale : new double[]{1.0, 30.0, 1000.0}) {
+         int zoom = EarthProjection.mapZoomForBlocksAcross(worldScale, 384, 256);
+         double blocksAcross = 384 * EarthProjection.EQUATOR_CIRCUMFERENCE_METERS / (256.0 * Math.pow(2.0, zoom)) / worldScale;
+         assertEquals(true, blocksAcross > 256 / Math.sqrt(2.0) && blocksAcross < 256 * Math.sqrt(2.0), "zoom " + zoom + " spans " + blocksAcross);
+      }
+      assertEquals(18, EarthProjection.mapZoomForBlocksAcross(1.0, 384, 256));
+      assertEquals(13, EarthProjection.mapZoomForBlocksAcross(30.0, 384, 256));
+      assertEquals(0, EarthProjection.mapZoomForBlocksAcross(0.0, 384, 256));
+   }
+
+   @Test
    void blockCorrectionIsInverseOfLocalMercatorGroundScale() {
       double worldScale = 30.0;
       double blockZ = EarthProjection.latToBlockZ(60.0, worldScale);

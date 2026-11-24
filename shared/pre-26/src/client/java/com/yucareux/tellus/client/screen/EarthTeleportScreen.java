@@ -1,5 +1,6 @@
 package com.yucareux.tellus.client.screen;
 
+import com.yucareux.tellus.client.hud.TellusMinimap;
 import com.yucareux.tellus.client.widget.map.MapTileLayer;
 import com.yucareux.tellus.client.widget.map.PlaceSearchWidget;
 import com.yucareux.tellus.client.widget.map.SlippyMapPoint;
@@ -21,6 +22,7 @@ public class EarthTeleportScreen extends AbstractTellusScreen {
    private static final int SEARCH_ZOOM = 12;
    private static final int MAX_BUTTON_WIDTH = 150;
    private static final int BUTTON_GAP = 4;
+   private static final int MINIMAP_BUTTON_WIDTH = 100;
    private static final int NOTICE_TICKS = 100;
    private static final int NOTICE_COLOR = 0xFFFF6060;
 
@@ -61,9 +63,9 @@ public class EarthTeleportScreen extends AbstractTellusScreen {
       MapScreenResources.close(this.mapWidget, this.searchWidget);
 
       int mapX = 20;
-      int mapY = 20;
+      int mapY = 24;
       int mapWidth = this.width - 40;
-      int mapHeight = this.height - 72;
+      int mapHeight = this.height - 76;
       this.mapWidget = new SlippyMapWidget(mapX, mapY, mapWidth, mapHeight);
       this.mapWidget.getMap().setLayer(EarthMapSession.layer());
       this.markerComponent = new MarkerMapComponent(marker).allowMovement();
@@ -73,6 +75,15 @@ public class EarthTeleportScreen extends AbstractTellusScreen {
       this.searchWidget = new PlaceSearchWidget(mapX + 5, mapY + 5, 200, 20, geocoder, this::handleSearch);
       this.addRenderableOnly(this.mapWidget);
       this.addRenderableWidget(this.searchWidget);
+      // Above the map, so a click on it cannot also move the marker.
+      this.addRenderableWidget(
+         Button.builder(TellusMinimap.buttonMessage(), button -> {
+               TellusMinimap.setEnabled(!TellusMinimap.enabled());
+               button.setMessage(TellusMinimap.buttonMessage());
+            })
+            .bounds(mapX + mapWidth - MINIMAP_BUTTON_WIDTH, 2, MINIMAP_BUTTON_WIDTH, 20)
+            .build()
+      );
 
       int buttonY = this.height - 28;
       boolean xaeroWaypoints = XaeroWaypoints.available();

@@ -52,6 +52,19 @@ public final class EarthProjection {
       }
    }
 
+   /**
+    * The web map zoom at which {@code widthPixels} map pixels span about {@code blocksAcross} blocks. Map tiles and
+    * Tellus blocks are both Web Mercator, so the ratio of pixels to blocks does not depend on latitude.
+    */
+   public static int mapZoomForBlocksAcross(double worldScale, int widthPixels, int blocksAcross) {
+      if (!(worldScale > 0.0) || widthPixels <= 0 || blocksAcross <= 0) {
+         return 0;
+      }
+      double metersPerPixelAtZoomZero = EQUATOR_CIRCUMFERENCE_METERS / 256.0;
+      double zoom = Math.log(widthPixels * metersPerPixelAtZoomZero / (blocksAcross * worldScale)) / Math.log(2.0);
+      return (int)Math.round(zoom);
+   }
+
    /** Blocks from X = 0 to the ±180° meridian. */
    public static double halfWidthBlocks(double worldScale) {
       return worldScale <= 0.0 ? 0.0 : 180.0 * blocksPerDegree(worldScale);

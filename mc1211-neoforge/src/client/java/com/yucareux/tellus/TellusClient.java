@@ -1,6 +1,8 @@
 package com.yucareux.tellus;
 
 import com.yucareux.tellus.client.hud.ManagedTerrainDownloadOverlay;
+import com.yucareux.tellus.client.hud.TellusMinimap;
+import com.yucareux.tellus.client.hud.TellusMinimapOverlay;
 import com.yucareux.tellus.client.screen.EarthMapSession;
 import com.yucareux.tellus.client.screen.EarthTeleportScreen;
 import com.yucareux.tellus.integration.distant_horizons.managed.ManagedTerrainClientState;
@@ -36,6 +38,12 @@ public final class TellusClient {
       GLFW.GLFW_KEY_M,
       NeoForgeClientVersionCompat.keyCategory()
    );
+   private static final KeyMapping TOGGLE_MINIMAP_KEY = new KeyMapping(
+      "key.tellus.toggle_minimap",
+      InputConstants.Type.KEYSYM,
+      GLFW.GLFW_KEY_N,
+      NeoForgeClientVersionCompat.keyCategory()
+   );
    private static int managedTerrainViewUpdateTicks;
 
    private TellusClient() {
@@ -56,17 +64,22 @@ public final class TellusClient {
    private static void registerKeyMappings(RegisterKeyMappingsEvent event) {
       NeoForgeClientVersionCompat.registerKeyCategory(event);
       event.register(OPEN_MAP_KEY);
+      event.register(TOGGLE_MINIMAP_KEY);
    }
 
    private static void registerGuiLayers(RegisterGuiLayersEvent event) {
+      event.registerAboveAll(Tellus.id("minimap"), (graphics, deltaTracker) -> TellusMinimapOverlay.render(graphics));
       event.registerAboveAll(Tellus.id("managed_terrain_status"), (graphics, deltaTracker) -> ManagedTerrainDownloadOverlay.render(graphics));
    }
 
    public static void handleOpenMapPayload(GeoTpOpenMapPayload payload, IPayloadContext context) {
       Minecraft.getInstance().execute(() -> {
-         Minecraft minecraft = Minecraft.getInstance();
-         Screen parent = minecraft.screen;
-         minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude(), payload.worldScale(), payload.canTeleport()));
+         EarthMapSession.setWorldScale(payload.worldScale());
+         if (payload.openMap()) {
+            Minecraft minecraft = Minecraft.getInstance();
+            Screen parent = minecraft.screen;
+            minecraft.setScreen(new EarthTeleportScreen(parent, payload.latitude(), payload.longitude(), payload.worldScale(), payload.canTeleport()));
+         }
       });
    }
 
@@ -107,6 +120,9 @@ public final class TellusClient {
          if (minecraft.screen == null && minecraft.player != null && minecraft.getConnection() != null) {
             minecraft.getConnection().sendCommand("tellus map");
          }
+      }
+      while (TOGGLE_MINIMAP_KEY.consumeClick()) {
+         TellusMinimap.toggle();
       }
 
       if (minecraft.player != null && ++managedTerrainViewUpdateTicks >= 40) {
