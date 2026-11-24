@@ -6,23 +6,37 @@ import java.util.Locale;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 
-/** The line under the map that names the marker's block coordinates. */
+/**
+ * The marker's block coordinates, for the line under the map and for waypoints. They are clamped and rounded the same
+ * way as a teleport to the marker, so the numbers match where it would land.
+ */
 final class MapMarkerText {
    private MapMarkerText() {
    }
 
    static Component describe(SlippyMapPoint marker, double worldScale) {
-      // Clamped and rounded the same way as a teleport to the marker, so the numbers match where it would land.
-      double latitude = EarthProjection.clampLatitude(marker.getLatitude());
-      double longitude = Mth.clamp(marker.getLongitude(), -180.0, 180.0);
-      int blockX = Mth.floor(EarthProjection.longitudeToBlockX(longitude, worldScale));
-      int blockZ = Mth.floor(EarthProjection.latToBlockZ(latitude, worldScale));
       return Component.translatable(
          "gui.earth.marker_position",
-         blockX,
-         blockZ,
-         String.format(Locale.ROOT, "%.5f", latitude),
-         String.format(Locale.ROOT, "%.5f", longitude)
+         blockX(marker, worldScale),
+         blockZ(marker, worldScale),
+         String.format(Locale.ROOT, "%.5f", latitude(marker)),
+         String.format(Locale.ROOT, "%.5f", longitude(marker))
       );
+   }
+
+   static int blockX(SlippyMapPoint marker, double worldScale) {
+      return Mth.floor(EarthProjection.longitudeToBlockX(longitude(marker), worldScale));
+   }
+
+   static int blockZ(SlippyMapPoint marker, double worldScale) {
+      return Mth.floor(EarthProjection.latToBlockZ(latitude(marker), worldScale));
+   }
+
+   private static double latitude(SlippyMapPoint marker) {
+      return EarthProjection.clampLatitude(marker.getLatitude());
+   }
+
+   private static double longitude(SlippyMapPoint marker) {
+      return Mth.clamp(marker.getLongitude(), -180.0, 180.0);
    }
 }

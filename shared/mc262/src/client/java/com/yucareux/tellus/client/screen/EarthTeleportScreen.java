@@ -20,6 +20,8 @@ public class EarthTeleportScreen extends Screen {
    private static final int SEARCH_ZOOM = 12;
    private static final int MAX_BUTTON_WIDTH = 150;
    private static final int BUTTON_GAP = 4;
+   private static final int NOTICE_TICKS = 100;
+   private static final int NOTICE_COLOR = 0xFFFF6060;
 
    private final Screen parent;
    private final double initialLatitude;
@@ -31,6 +33,9 @@ public class EarthTeleportScreen extends Screen {
    private PlaceSearchWidget searchWidget;
    private Button layerButton;
    private boolean suppressMapRelease;
+   /** Shown in place of the marker's coordinates for a few seconds. */
+   private Component notice;
+   private int noticeTicks;
 
    public EarthTeleportScreen(Screen parent, double latitude, double longitude, double worldScale, boolean canTeleport) {
       super(Component.translatable("gui.earth.map"));
@@ -69,16 +74,28 @@ public class EarthTeleportScreen extends Screen {
       this.addRenderableWidget(this.searchWidget);
 
       int buttonY = this.height - 28;
-      int buttonWidth = Math.min(MAX_BUTTON_WIDTH, (mapWidth - BUTTON_GAP * 2) / 3);
-      int buttonX = (this.width - buttonWidth * 3 - BUTTON_GAP * 2) / 2;
+      boolean xaeroWaypoints = XaeroWaypoints.available();
+      int buttonCount = xaeroWaypoints ? 4 : 3;
+      int buttonWidth = Math.min(MAX_BUTTON_WIDTH, (mapWidth - BUTTON_GAP * (buttonCount - 1)) / buttonCount);
+      int buttonStep = buttonWidth + BUTTON_GAP;
+      int buttonX = (this.width - buttonStep * buttonCount + BUTTON_GAP) / 2;
       this.layerButton = this.addRenderableWidget(
          Button.builder(layerMessage(EarthMapSession.layer()), button -> this.switchLayer())
             .bounds(buttonX, buttonY, buttonWidth, 20)
             .build()
       );
+      if (xaeroWaypoints) {
+         buttonX += buttonStep;
+         Button waypointButton = this.addRenderableWidget(
+            Button.builder(Component.translatable("gui.earth.waypoint"), button -> this.addXaeroWaypoint())
+               .bounds(buttonX, buttonY, buttonWidth, 20)
+               .build()
+         );
+         waypointButton.setTooltip(Tooltip.create(Component.translatable("gui.earth.waypoint.tooltip")));
+      }
       Button teleportButton = this.addRenderableWidget(
          Button.builder(Component.translatable("gui.earth.teleport"), button -> this.sendTeleport())
-            .bounds(buttonX + buttonWidth + BUTTON_GAP, buttonY, buttonWidth, 20)
+            .bounds(buttonX + buttonStep, buttonY, buttonWidth, 20)
             .build()
       );
       if (!this.canTeleport) {
@@ -87,7 +104,7 @@ public class EarthTeleportScreen extends Screen {
       }
       this.addRenderableWidget(
          Button.builder(Component.translatable(this.canTeleport ? "gui.cancel" : "gui.done"), button -> this.closeScreen())
-            .bounds(buttonX + (buttonWidth + BUTTON_GAP) * 2, buttonY, buttonWidth, 20)
+            .bounds(buttonX + buttonStep * 2, buttonY, buttonWidth, 20)
             .build()
       );
       this.addWidget(this.mapWidget);
@@ -109,6 +126,20 @@ public class EarthTeleportScreen extends Screen {
       this.mapWidget.getMap().setLayer(layer);
       EarthMapSession.rememberLayer(layer);
       this.layerButton.setMessage(layerMessage(layer));
+   }
+
+   private void addXaeroWaypoint() {
+      SlippyMapPoint marker = this.markerComponent == null ? null : this.markerComponent.getMarker();
+      if (marker == null || this.minecraft == null) {
+         return;
+      }
+
+      // Xaero's Minimap opens its own screen in place of this one. It stays closed when the minimap cannot take a
+      // waypoint at the moment, which it only writes to its log, so say here why nothing happened.
+      if (!XaeroWaypoints.openNewWaypoint(this.minecraft, marker, this.worldScale) || this.minecraft.gui.screen() == this) {
+         this.notice = Component.translatable("gui.earth.waypoint.failed");
+         this.noticeTicks = NOTICE_TICKS;
+      }
    }
 
    private static Component layerMessage(MapTileLayer layer) {
@@ -170,13 +201,18 @@ public class EarthTeleportScreen extends Screen {
       super.extractRenderState(graphics, mouseX, mouseY, delta);
       graphics.centeredText(this.font, this.title, this.width / 2, 4, 16777215);
       SlippyMapPoint marker = this.markerComponent == null ? null : this.markerComponent.getMarker();
-      if (marker != null) {
+      if (this.noticeTicks > 0 && this.notice != null) {
+         graphics.centeredText(this.font, this.notice, this.width / 2, this.height - 45, NOTICE_COLOR);
+      } else if (marker != null) {
          graphics.centeredText(this.font, MapMarkerText.describe(marker, this.worldScale), this.width / 2, this.height - 45, -1);
       }
    }
 
    public void tick() {
       super.tick();
+      if (this.noticeTicks > 0) {
+         this.noticeTicks--;
+      }
       if (this.searchWidget != null) {
          this.searchWidget.tick();
       }

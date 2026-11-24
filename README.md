@@ -39,7 +39,7 @@ Build all targets with `./gradlew build`, or only the new targets with `./gradle
 - OSM roads, buildings, and map features generated with Arnis-derived logic
 - Real-time inspired weather and time systems (optional)
 - Distant Horizons integration for long-distance terrain rendering
-- In-game map for finding real-world places and their block coordinates, with standard, topographic, public transport and railway maps, and teleporting for operators
+- In-game map for finding real-world places and their block coordinates, with standard, topographic, public transport and railway maps, waypoints for Xaero's Minimap, and teleporting for operators
 
 Houses use coordinated facades, framed windows, entrance canopies, and pitched roofs with enclosed attic space. High rises have a wider podium, aligned window bays, and upper setbacks that preserve usable floors. At 1:1 world scale, interiors use footprint-aware rooms, clear door approaches, furnished living and work areas, and continuous stairs with landings, guardrails, and floor openings. Very small multi-storey footprints use a ladder when a complete staircase cannot fit. These changes apply to newly generated chunks; existing buildings are not rebuilt automatically.
 
@@ -70,7 +70,7 @@ The `3.3.1-tellus.1` fork preserves extended-height LODs and Iris compatibility,
 
 ## Commands
 
-- `/tellus map`: Opens the map (also bound to M). Any player can place a marker to see its block coordinates and switch between the standard, topographic, public transport and railway maps. Only players with gamemaster permissions can teleport to the marker. The map keeps its zoom and map type until you leave the world or server.
+- `/tellus map`: Opens the map (also bound to M). Any player can place a marker to see its block coordinates and switch between the standard, topographic, public transport and railway maps. Only players with gamemaster permissions can teleport to the marker. With Xaero's Minimap installed, Add Waypoint opens its New Waypoint screen with the marker's X and Z filled in (no height, so the waypoint sits at your own height); the waypoint then also shows on Xaero's World Map. The map keeps its zoom and map type until you leave the world or server.
 - `/tellus weather`: Shows local Tellus weather and time information at your current position.
 - `/tellus config weather enable_realtime_time <true|false>`: Overrides the real-time time setting on the server (requires gamemaster permissions).
 - `/tellus config weather enable_realtime_weather <true|false>`: Overrides the real-time weather setting on the server (requires gamemaster permissions).
