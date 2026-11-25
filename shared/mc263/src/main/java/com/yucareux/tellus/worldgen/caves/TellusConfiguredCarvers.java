@@ -20,7 +20,10 @@ final class TellusConfiguredCarvers {
    private final int tellusMinY;
    private final int tellusMaxY;
    private final int undergroundDepth;
+   /** Position of the ravine carver in {@link #orderedCarvers(int)}. */
+   static final int RAVINE_INDEX = 2;
    private final ConcurrentMap<Integer, List<WorldCarver>> carversBySurface = new ConcurrentHashMap<>();
+   private final ConcurrentMap<Integer, WorldCarver> ravinesByAnchor = new ConcurrentHashMap<>();
 
    private TellusConfiguredCarvers(int tellusMinY, int tellusHeight, int undergroundDepth) {
       this.tellusMinY = tellusMinY;
@@ -38,14 +41,21 @@ final class TellusConfiguredCarvers {
       return List.of(
          cave(0.15F, floor, ceiling),
          cave(0.07F, floor, Math.max(floor, ceiling - 16)),
-         new CanyonWorldCarver(
-            0.01F,
-            UniformHeight.of(VerticalAnchor.absolute(Math.max(floor, ceiling - 96)), VerticalAnchor.absolute(ceiling)),
-            UniformFloat.of(-0.125F, 0.125F),
-            new CanyonWorldCarver.Shape(
-               UniformFloat.of(0.75F, 1.0F), TrapezoidFloat.of(0.0F, 6.0F, 2.0F), 3,
-               UniformFloat.of(0.75F, 1.0F), 1.0F, 0.0F, ConstantFloat.of(3.0F)
-            )
+         this.ravine(surfaceY)
+      );
+   }
+
+   private WorldCarver createRavine(int anchorSurfaceY) {
+      TellusRavinePlacement.Band band = TellusRavinePlacement.band(
+         anchorSurfaceY, this.tellusMinY, this.tellusMaxY, this.undergroundDepth
+      );
+      return new CanyonWorldCarver(
+         0.01F,
+         UniformHeight.of(VerticalAnchor.absolute(band.floorY()), VerticalAnchor.absolute(band.ceilingY())),
+         UniformFloat.of(-0.125F, 0.125F),
+         new CanyonWorldCarver.Shape(
+            UniformFloat.of(0.75F, 1.0F), TrapezoidFloat.of(0.0F, 6.0F, 2.0F), 3,
+            UniformFloat.of(0.75F, 1.0F), 1.0F, 0.0F, ConstantFloat.of(3.0F)
          )
       );
    }
@@ -59,8 +69,19 @@ final class TellusConfiguredCarvers {
       );
    }
 
+   /**
+    * Returns the carvers for a source chunk, in seeding order. The ravine entry is placed from the source
+    * chunk's own surface and is only good for the start check; carve a starting ravine with
+    * {@link #ravine(int)} and its lowest reachable surface.
+    */
    List<WorldCarver> orderedCarvers(int surfaceY) {
       int bounded = Math.max(this.tellusMinY, Math.min(this.tellusMaxY, surfaceY));
       return this.carversBySurface.computeIfAbsent(bounded, this::createForSurface);
+   }
+
+   /** Returns the ravine carver for a ravine whose lowest reachable surface is {@code anchorSurfaceY}. */
+   WorldCarver ravine(int anchorSurfaceY) {
+      int bounded = Math.max(this.tellusMinY, Math.min(this.tellusMaxY, anchorSurfaceY));
+      return this.ravinesByAnchor.computeIfAbsent(bounded, this::createRavine);
    }
 }

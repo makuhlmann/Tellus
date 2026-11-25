@@ -42,6 +42,7 @@ public final class TellusVanillaCarverRunner {
    
    private final NoiseGeneratorSettings contextNoiseSettings;
    private final TellusConfiguredCarvers configuredCarvers;
+   private final TellusRavinePlacement ravinePlacement = new TellusRavinePlacement();
    private final int chunkMinY;
    private final TellusVanillaNoiseCaveSampler noiseCaveSampler;
 
@@ -163,6 +164,16 @@ public final class TellusVanillaCarverRunner {
                   MinecraftVersionCompat.chunkZ(sourcePos)
                );
                if (configured.isStartChunk(random)) {
+                  if (carverIndex == TellusConfiguredCarvers.RAVINE_INDEX) {
+                     // The start check doesn't depend on height, so only starting ravines pay for the surface scan.
+                     int lowestSurfaceY = this.ravinePlacement.lowestSurfaceInReach(
+                        MinecraftVersionCompat.chunkX(sourcePos),
+                        MinecraftVersionCompat.chunkZ(sourcePos),
+                        sourceSurfaceY,
+                        safeSurfaceHeightSampler
+                     );
+                     configured = this.configuredCarvers.ravine(lowestSurfaceY);
+                  }
                   configured.carve(
                      carvingContext,
                      chunk,

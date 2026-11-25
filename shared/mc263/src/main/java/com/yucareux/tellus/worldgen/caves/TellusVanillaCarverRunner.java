@@ -48,6 +48,7 @@ public final class TellusVanillaCarverRunner {
    
    private final NoiseGeneratorSettings contextNoiseSettings;
    private final TellusConfiguredCarvers configuredCarvers;
+   private final TellusRavinePlacement ravinePlacement = new TellusRavinePlacement();
    private final int chunkMinY;
    private final TellusVanillaNoiseCaveSampler noiseCaveSampler;
 
@@ -134,6 +135,13 @@ public final class TellusVanillaCarverRunner {
                WorldCarver carver = carvers.get(index);
                random.setLargeFeatureSeed(worldSeed + index, sourcePos.x(), sourcePos.z());
                if (carver.isStartChunk(random)) {
+                  if (index == TellusConfiguredCarvers.RAVINE_INDEX) {
+                     // The start check doesn't depend on height, so only starting ravines pay for the surface scan.
+                     int lowestSurfaceY = this.ravinePlacement.lowestSurfaceInReach(
+                        sourcePos.x(), sourcePos.z(), surfaceY, safeSurfaceHeightSampler
+                     );
+                     carver = this.configuredCarvers.ravine(lowestSurfaceY);
+                  }
                   carver.carve(context, random, targetPos, sourcePos, mask);
                }
             }

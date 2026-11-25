@@ -23,11 +23,14 @@ final class TellusConfiguredCarvers {
    private static final float CAVE_PROBABILITY = 0.15F;
    private static final float CAVE_EXTRA_PROBABILITY = 0.07F;
    private static final float CANYON_PROBABILITY = 0.01F;
+   /** Position of the ravine carver in {@link #orderedCarvers(int)}. */
+   static final int RAVINE_INDEX = 2;
    private final HolderSet<Block> replaceables;
    private final int tellusMinY;
    private final int tellusMaxY;
    private final int undergroundDepth;
    private final ConcurrentMap<Integer, List<ConfiguredWorldCarver<?>>> carversBySurface = new ConcurrentHashMap<>();
+   private final ConcurrentMap<Integer, ConfiguredWorldCarver<?>> ravinesByAnchor = new ConcurrentHashMap<>();
 
    private TellusConfiguredCarvers(HolderSet<Block> replaceables, int tellusMinY, int tellusHeight, int undergroundDepth) {
       this.replaceables = replaceables;
@@ -45,8 +48,6 @@ final class TellusConfiguredCarvers {
       int caveFloorY = Math.max(this.tellusMinY, surfaceY - this.undergroundDepth + 1);
       int caveCeilingY = Math.max(caveFloorY, Math.min(this.tellusMaxY, surfaceY - 1));
       int caveExtraCeilingY = Math.max(caveFloorY, caveCeilingY - 16);
-      int canyonFloorY = Math.max(caveFloorY, caveCeilingY - 96);
-      int canyonCeilingY = caveCeilingY;
       int lavaLevelY = Math.min(caveCeilingY, caveFloorY + 8);
 
       TellusCaveCarver cave = new TellusCaveCarver(
@@ -75,13 +76,21 @@ final class TellusConfiguredCarvers {
             UniformFloat.of(-1.0F, -0.4F)
          )
       );
+      return List.of(cave.configured(), caveExtraUnderground.configured(), this.ravine(surfaceY));
+   }
+
+   private ConfiguredWorldCarver<?> createRavine(int anchorSurfaceY) {
+      TellusRavinePlacement.Band band = TellusRavinePlacement.band(
+         anchorSurfaceY, this.tellusMinY, this.tellusMaxY, this.undergroundDepth
+      );
+      int lavaLevelY = Math.min(band.ceilingY(), band.shellFloorY() + 8);
       CanyonShapeConfiguration canyonShape = new CanyonShapeConfiguration(
          UniformFloat.of(0.75F, 1.0F), TrapezoidFloat.of(0.0F, 6.0F, 2.0F), 3, UniformFloat.of(0.75F, 1.0F), 1.0F, 0.0F
       );
       TellusRavineCarver canyon = new TellusRavineCarver(
          new CanyonCarverConfiguration(
             CANYON_PROBABILITY,
-            UniformHeight.of(VerticalAnchor.absolute(canyonFloorY), VerticalAnchor.absolute(canyonCeilingY)),
+            UniformHeight.of(VerticalAnchor.absolute(band.floorY()), VerticalAnchor.absolute(band.ceilingY())),
             ConstantFloat.of(3.0F),
             VerticalAnchor.absolute(lavaLevelY),
             CarverDebugSettings.of(false, Blocks.WARPED_BUTTON.defaultBlockState()),
@@ -90,12 +99,23 @@ final class TellusConfiguredCarvers {
             canyonShape
          )
       );
-      return List.of(cave.configured(), caveExtraUnderground.configured(), canyon.configured());
+      return canyon.configured();
    }
 
+   /**
+    * Returns the carvers for a source chunk, in seeding order. The ravine entry is placed from the source
+    * chunk's own surface and is only good for the start check; carve a starting ravine with
+    * {@link #ravine(int)} and its lowest reachable surface.
+    */
    List<ConfiguredWorldCarver<?>> orderedCarvers(int surfaceY) {
       int boundedSurfaceY = Math.max(this.tellusMinY, Math.min(this.tellusMaxY, surfaceY));
       return this.carversBySurface.computeIfAbsent(boundedSurfaceY, this::createForSurface);
+   }
+
+   /** Returns the ravine carver for a ravine whose lowest reachable surface is {@code anchorSurfaceY}. */
+   ConfiguredWorldCarver<?> ravine(int anchorSurfaceY) {
+      int boundedAnchorY = Math.max(this.tellusMinY, Math.min(this.tellusMaxY, anchorSurfaceY));
+      return this.ravinesByAnchor.computeIfAbsent(boundedAnchorY, this::createRavine);
    }
 
 }
