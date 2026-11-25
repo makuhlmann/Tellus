@@ -92,13 +92,16 @@ public final class TellusVanillaNoiseCaveSampler {
             if (generationFloorYByColumn != null) {
                actualBottomY = Math.max(actualBottomY, generationFloorYByColumn[columnIndex] + 1);
             }
-            int firstCarveY = exposeSurfaceEntrances ? actualSurfaceY : actualSurfaceY - SURFACE_COVER_DEPTH - 1;
+            int worldX = chunkMinX + localX;
+            int worldZ = chunkMinZ + localZ;
+            // The mask only adds a roof. The reference surface above stays the same in masked columns, so caves
+            // keep their shape across the mask's edges.
+            boolean openColumn = exposeSurfaceEntrances && TellusCaveEntranceMask.allowsOpening(worldSeed, worldX, worldZ);
+            int firstCarveY = openColumn ? actualSurfaceY : actualSurfaceY - SURFACE_COVER_DEPTH - 1;
             if (firstCarveY < actualBottomY) {
                continue;
             }
 
-            int worldX = chunkMinX + localX;
-            int worldZ = chunkMinZ + localZ;
             int minimumNearbySurfaceY = minimumGeologySurfaceYByColumn != null
                ? minimumGeologySurfaceYByColumn[columnIndex]
                : Integer.MAX_VALUE;
@@ -115,7 +118,13 @@ public final class TellusVanillaNoiseCaveSampler {
                BlockState replacement = caveAllowed ? caveReplacement(vanillaState, actualY, tellusSeaLevel) : null;
                boolean noiseFeature = false;
                if (replacement == null && (applyOreVeins || applyGeologicalStonePatches)) {
-                  replacement = oreVeinReplacement(vanillaState, applyOreVeins, applyGeologicalStonePatches);
+                  // Ore veins and rock patches keep the even depth scale so they stay aligned with the deepslate
+                  // boundary; only caves keep vanilla proportions near the surface.
+                  int rockVirtualY = TellusCaveDepthMapper.uniformVirtualYForActualY(
+                     actualY, actualSurfaceY, actualBottomY, virtualSurfaceY, field.minY()
+                  );
+                  BlockState rockState = rockVirtualY == virtualY ? vanillaState : field.state(localX, rockVirtualY, localZ);
+                  replacement = oreVeinReplacement(rockState, applyOreVeins, applyGeologicalStonePatches);
                   boolean geologicalStone = replacement != null
                      && UndergroundFeatureClassifier.isGeologicalStone(replacement.getBlock());
                   if (geologicalStone

@@ -153,4 +153,60 @@ class TellusCaveDepthMapperTest {
          ) > TellusCaveDepthMapper.VANILLA_MIN_Y
       );
    }
+
+   @Test
+   void keepsVanillaProportionsNearTheSurfaceOfADeepShell() {
+      int surfaceY = 200;
+      int bottomY = surfaceY - 511;
+      int virtualSurfaceY = 100;
+
+      for (int depth = 0; depth <= TellusCaveDepthMapper.UNSTRETCHED_SURFACE_DEPTH; depth++) {
+         assertEquals(
+            virtualSurfaceY - depth,
+            TellusCaveDepthMapper.virtualYForActualY(
+               surfaceY - depth, surfaceY, bottomY, virtualSurfaceY, TellusCaveDepthMapper.VANILLA_MIN_Y
+            )
+         );
+      }
+      assertEquals(
+         TellusCaveDepthMapper.VANILLA_MIN_Y,
+         TellusCaveDepthMapper.virtualYForActualY(bottomY, surfaceY, bottomY, virtualSurfaceY, TellusCaveDepthMapper.VANILLA_MIN_Y)
+      );
+   }
+
+   @Test
+   void keepsRockFeaturesOnTheEvenScale() {
+      int surfaceY = 200;
+      int bottomY = surfaceY - 511;
+      int actualY = surfaceY - 256;
+      int rockY = TellusCaveDepthMapper.uniformVirtualYForActualY(
+         actualY, surfaceY, bottomY, TellusCaveDepthMapper.VANILLA_SEA_LEVEL, TellusCaveDepthMapper.VANILLA_MIN_Y
+      );
+      int caveY = TellusCaveDepthMapper.virtualYForActualY(
+         actualY, surfaceY, bottomY, TellusCaveDepthMapper.VANILLA_SEA_LEVEL, TellusCaveDepthMapper.VANILLA_MIN_Y
+      );
+
+      // Halfway down the shell is halfway down the vanilla column for ore veins...
+      assertEquals(TellusCaveDepthMapper.VANILLA_SEA_LEVEL - 64, rockY);
+      // ...while caves, which keep vanilla's proportions near the surface, are further along the profile there.
+      assertTrue(caveY < rockY);
+   }
+
+   @Test
+   void easesIntoTheStretchWithoutJumps() {
+      int surfaceY = 200;
+      int bottomY = surfaceY - 511;
+      for (int virtualSurfaceY : new int[] {-20, 30, 63, 100, 250}) {
+         int previous = virtualSurfaceY;
+         for (int actualY = surfaceY; actualY >= bottomY; actualY--) {
+            int virtualY = TellusCaveDepthMapper.virtualYForActualY(
+               actualY, surfaceY, bottomY, virtualSurfaceY, TellusCaveDepthMapper.VANILLA_MIN_Y
+            );
+            assertTrue(virtualY <= previous, "virtual Y must not rise with depth");
+            assertTrue(previous - virtualY <= 1, "one actual block never skips virtual blocks in a stretched shell");
+            previous = virtualY;
+         }
+         assertEquals(TellusCaveDepthMapper.VANILLA_MIN_Y, previous);
+      }
+   }
 }
