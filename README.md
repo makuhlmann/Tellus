@@ -224,6 +224,7 @@ Snowfall and snow melt follow the same Open-Meteo temperature, with or without R
 - Public transport map: ÖPNVKarte by MeMoMaps (https://öpnvkarte.de/), up to zoom 18. © OpenStreetMap contributors; map © MeMoMaps (CC BY-SA 2.0).
 - Railway map: the standard style of OpenRailwayMap (https://www.openrailwaymap.org/), drawn over a faded standard map, up to zoom 19. Data © OpenStreetMap contributors (ODbL); style CC-BY-SA 2.0 OpenRailwayMap and OpenStreetMap. Its 512 px tiles are reduced to 256 px once when downloaded. Usage policy: https://wiki.openstreetmap.org/wiki/OpenRailwayMap/API
 - Tellus downloads only the tiles in view and keeps them in `tellus/cache/map`, so each tile is fetched once.
+- Each tile server gets only a few requests at a time over one shared HTTP/2 connection: four for OpenStreetMap, two for the others, and OpenRailwayMap's at least 100 ms apart. When a server rate limits (HTTP 429, a block notice, or a 503 with `Retry-After`), all requests to it pause, for its `Retry-After` or else one minute, doubling up to 15 minutes while it keeps refusing. Three failed requests in a row pause it for 15 seconds, doubling up to five minutes. The map and minimap say which server is paused and when it is asked again, and tiles already downloaded keep showing meanwhile. After a pause one request at a time goes out until the server answers again.
 
 ### Open-Meteo (weather)
 - Weather data provided by Open-Meteo.com.

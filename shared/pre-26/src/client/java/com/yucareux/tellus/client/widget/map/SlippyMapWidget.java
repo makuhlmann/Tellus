@@ -18,6 +18,7 @@ public class SlippyMapWidget extends AbstractTellusWidget {
    private static final int ATTRIBUTION_LINE_HEIGHT = 10;
    /** 55% white over the base map: it stays readable while the overlay's coloured lines stand out. */
    private static final int OVERLAY_BASE_FADE = 0x8CFFFFFF;
+   private static final int NOTICE_COLOR = 0xFFFFDD55;
    private final SlippyMap map;
    private final List<MapComponent> components = new ArrayList<>();
    private MapComponent dragComponent;
@@ -87,20 +88,31 @@ public class SlippyMapWidget extends AbstractTellusWidget {
       this.drawAttribution(graphics);
    }
 
+   /** Draws the attribution, under notices for tile servers that are paused after refusing or failing requests. */
    private void drawAttribution(GuiGraphics graphics) {
       Font font = Minecraft.getInstance().font;
       if (this.attributionBelow) {
+         List<String> notices = this.map.getLayer().serverNoticeLines(font, this.width - 4);
          List<String> lines = this.map.getLayer().wrappedAttributionLines(font, this.width - 4);
+         int rows = notices.size() + lines.size();
          int top = this.getY() + this.height;
-         graphics.fill(this.getX(), top, this.getX() + this.width, top + lines.size() * ATTRIBUTION_LINE_HEIGHT + 2, -1072689136);
-         for (int index = 0; index < lines.size(); index++) {
-            graphics.drawString(font, lines.get(index), this.getX() + 2, top + 2 + index * ATTRIBUTION_LINE_HEIGHT, -1);
+         graphics.fill(this.getX(), top, this.getX() + this.width, top + rows * ATTRIBUTION_LINE_HEIGHT + 2, -1072689136);
+         for (int index = 0; index < rows; index++) {
+            boolean notice = index < notices.size();
+            String line = notice ? notices.get(index) : lines.get(index - notices.size());
+            graphics.drawString(font, line, this.getX() + 2, top + 2 + index * ATTRIBUTION_LINE_HEIGHT, notice ? NOTICE_COLOR : -1);
          }
          return;
       }
 
-      List<String> lines = this.map.getLayer().attributionLines(font, this.width - 8 - ATTRIBUTION_PADDING * 2);
+      int maxTextWidth = this.width - 8 - ATTRIBUTION_PADDING * 2;
+      List<String> notices = this.map.getLayer().serverNoticeLines(font, maxTextWidth);
+      List<String> lines = this.map.getLayer().attributionLines(font, maxTextWidth);
+      int rows = notices.size() + lines.size();
       int textWidth = 0;
+      for (String line : notices) {
+         textWidth = Math.max(textWidth, font.width(line));
+      }
       for (String line : lines) {
          textWidth = Math.max(textWidth, font.width(line));
       }
@@ -108,10 +120,12 @@ public class SlippyMapWidget extends AbstractTellusWidget {
       int maxX = this.getX() + this.width - 4;
       int maxY = this.getY() + this.height - 4 - this.attributionBottomPadding;
       int originX = maxX - textWidth - ATTRIBUTION_PADDING * 2;
-      int originY = maxY - lines.size() * ATTRIBUTION_LINE_HEIGHT - 3;
+      int originY = maxY - rows * ATTRIBUTION_LINE_HEIGHT - 3;
       graphics.fill(originX, originY, maxX, maxY, -1072689136);
-      for (int index = 0; index < lines.size(); index++) {
-         graphics.drawString(font, lines.get(index), originX + ATTRIBUTION_PADDING, originY + 2 + index * ATTRIBUTION_LINE_HEIGHT, -1);
+      for (int index = 0; index < rows; index++) {
+         boolean notice = index < notices.size();
+         String line = notice ? notices.get(index) : lines.get(index - notices.size());
+         graphics.drawString(font, line, originX + ATTRIBUTION_PADDING, originY + 2 + index * ATTRIBUTION_LINE_HEIGHT, notice ? NOTICE_COLOR : -1);
       }
    }
 

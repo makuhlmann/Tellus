@@ -15,6 +15,8 @@
   "gui.earth.map_layer.topographic": "地形図",
   "gui.earth.map_layer.transport": "交通",
   "gui.earth.map_layer.railway": "鉄道",
+  "gui.earth.map_server.refused": "%s がリクエストを制限しています。%s 後に再試行します",
+  "gui.earth.map_server.unreachable": "%s が応答しません。%s 後に再試行します",
   "gui.earth.marker_position": "マーカー: X %s, Z %s (%s, %s)",
   "gui.earth.teleport": "テレポート",
   "gui.earth.teleport.operators_only": "テレポートできるのはオペレーターのみです",

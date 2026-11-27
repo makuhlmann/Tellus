@@ -15,6 +15,8 @@
   "gui.earth.map_layer.topographic": "Topographic",
   "gui.earth.map_layer.transport": "Transport",
   "gui.earth.map_layer.railway": "Railways",
+  "gui.earth.map_server.refused": "%s is limiting requests, retrying in %s",
+  "gui.earth.map_server.unreachable": "%s is not answering, retrying in %s",
   "gui.earth.marker_position": "Marker: X %s, Z %s (%s, %s)",
   "gui.earth.teleport": "Teleport",
   "gui.earth.teleport.operators_only": "Only operators can teleport",

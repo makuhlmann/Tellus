@@ -15,6 +15,8 @@
   "gui.earth.map_layer.topographic": "Topográfico",
   "gui.earth.map_layer.transport": "Transporte",
   "gui.earth.map_layer.railway": "Ferroviario",
+  "gui.earth.map_server.refused": "%s limita las solicitudes, reintento en %s",
+  "gui.earth.map_server.unreachable": "%s no responde, reintento en %s",
   "gui.earth.marker_position": "Marcador: X %s, Z %s (%s, %s)",
   "gui.earth.teleport": "Teletransportar",
   "gui.earth.teleport.operators_only": "Solo los operadores pueden teletransportarse",

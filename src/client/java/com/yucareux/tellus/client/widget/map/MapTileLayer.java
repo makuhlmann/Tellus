@@ -1,8 +1,11 @@
 package com.yucareux.tellus.client.widget.map;
 
+import com.yucareux.tellus.world.data.source.MapTileServerGate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import net.minecraft.client.gui.Font;
+import net.minecraft.network.chat.Component;
 
 /** The maps a player can pick: one tile source, or one with transparent tiles from another drawn over it. */
 public enum MapTileLayer {
@@ -60,21 +63,49 @@ public enum MapTileLayer {
    public List<String> wrappedAttributionLines(Font font, int maxWidth) {
       List<String> lines = new ArrayList<>();
       for (String part : this.attribution.split(java.util.regex.Pattern.quote(ATTRIBUTION_SEPARATOR))) {
-         String line = "";
-         for (String word : part.split(" ")) {
-            String candidate = line.isEmpty() ? word : line + " " + word;
-            if (!line.isEmpty() && font.width(candidate) > maxWidth) {
-               lines.add(line);
-               line = word;
-            } else {
-               line = candidate;
-            }
-         }
-         if (!line.isEmpty()) {
-            lines.add(line);
-         }
+         wrap(lines, part, font, maxWidth);
       }
       return lines;
+   }
+
+   /**
+    * For each of this map's tile servers that is paused after refusing or failing requests, a notice saying so and
+    * when it is asked again, word-wrapped to the given width. Empty while every server takes requests.
+    */
+   public List<String> serverNoticeLines(Font font, int maxWidth) {
+      List<String> lines = new ArrayList<>(0);
+      addServerNotice(lines, this.base, font, maxWidth);
+      if (this.overlay != null) {
+         addServerNotice(lines, this.overlay, font, maxWidth);
+      }
+      return lines;
+   }
+
+   private static void addServerNotice(List<String> lines, MapTileSource source, Font font, int maxWidth) {
+      MapTileServerGate.Status status = source.gate().status();
+      if (status == null) {
+         return;
+      }
+      long seconds = Math.max(1L, (status.remainingNanos() + 999_999_999L) / 1_000_000_000L);
+      String remaining = String.format(Locale.ROOT, "%d:%02d", seconds / 60L, seconds % 60L);
+      String key = status.reason() == MapTileServerGate.PauseReason.REFUSED ? "gui.earth.map_server.refused" : "gui.earth.map_server.unreachable";
+      wrap(lines, Component.translatable(key, source.providerName(), remaining).getString(), font, maxWidth);
+   }
+
+   private static void wrap(List<String> lines, String text, Font font, int maxWidth) {
+      String line = "";
+      for (String word : text.split(" ")) {
+         String candidate = line.isEmpty() ? word : line + " " + word;
+         if (!line.isEmpty() && font.width(candidate) > maxWidth) {
+            lines.add(line);
+            line = word;
+         } else {
+            line = candidate;
+         }
+      }
+      if (!line.isEmpty()) {
+         lines.add(line);
+      }
    }
 
    /** The attribution on one line, or split into its parts when the line is wider than the map. */

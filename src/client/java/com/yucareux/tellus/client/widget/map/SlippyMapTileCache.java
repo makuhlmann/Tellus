@@ -10,17 +10,16 @@ import com.yucareux.tellus.cache.TellusCacheDomain;
 import com.yucareux.tellus.cache.TellusCacheFiles;
 import com.yucareux.tellus.cache.TellusCacheHandle;
 import com.yucareux.tellus.cache.TellusCacheRegistry;
+import com.yucareux.tellus.world.data.source.MapTileDownloader;
 import com.yucareux.tellus.world.data.source.MapTileImageValidator;
 import com.yucareux.tellus.world.data.source.MapTileImages;
+import com.yucareux.tellus.world.data.source.MapTileServerGate;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URL;
-import java.nio.channels.ClosedByInterruptException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -38,13 +37,16 @@ import net.minecraft.client.Minecraft;
 
 public class SlippyMapTileCache implements TellusCacheHandle {
    private static final int CACHE_SIZE = 1024;
+   /** Threads that read cached tiles and wait for downloads; each server's gate caps the requests sent to it. */
    private static final int LOAD_THREADS = 4;
    private static final int MAX_ACTIVE_LOADS = 256;
    private static final int MAX_TILE_BYTES = 4 * 1024 * 1024;
    private static final int MAX_TILE_DIMENSION = 512;
    private static final long RETRY_BASE_NANOS = TimeUnit.SECONDS.toNanos(1L);
    private static final long RETRY_MAX_NANOS = TimeUnit.SECONDS.toNanos(30L);
-   private static final String USER_AGENT = "Tellus-Minecraft-Mod (+https://github.com/Yucareux/Tellus)";
+   /** Attempts after which a tile the server answered with an error, such as 404, is not asked for again. */
+   private static final int MAX_TILE_ERROR_ATTEMPTS = 3;
+   private static final MapTileDownloader DOWNLOADER = new MapTileDownloader("Tellus-Minecraft-Mod (+https://github.com/Yucareux/Tellus)");
    private static final AtomicInteger NEXT_CACHE_ID = new AtomicInteger();
    /** Part of every tile's texture name: the minimap and the map screen hold caches at the same time. */
    private final int cacheId = NEXT_CACHE_ID.incrementAndGet();
@@ -92,7 +94,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       return tileSource.id() + "_" + this.cacheId;
    }
 
-   /** Drops the tiles of the previous source; downloads still running for it are cancelled and never shown. */
+   /** Drops the tiles of the previous source; its downloads already sent still finish and are saved to disk. */
    public void setSource(MapTileSource source) {
       Objects.requireNonNull(source, "source");
       if (source != this.source) {
@@ -139,8 +141,14 @@ public class SlippyMapTileCache implements TellusCacheHandle {
             for (Map.Entry<SlippyMapTilePos, SlippyMapTileCache.TileEntry> cached : this.tileCache.asMap().entrySet()) {
                SlippyMapTileCache.TileEntry entry = cached.getValue();
                SlippyMapTileCache.TileLoadTask task = entry.task;
+               if (task == null || task.committed) {
+                  // A download already sent finishes even when its tile scrolled away: the server has done the work.
+                  continue;
+               }
                Integer priority = plannedPriorities.get(cached.getKey());
-               if (task != null && (priority == null || !task.started && (task.revision != this.viewportRevision || task.priority != priority))) {
+               boolean leftView = priority == null;
+               boolean reprioritized = !task.started && (task.revision != this.viewportRevision || task.priority != priority);
+               if (leftView || reprioritized) {
                   this.cancelTaskLocked(entry);
                }
             }
@@ -156,10 +164,11 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       }
    }
 
+   /** Stops loading tiles. Downloads already sent finish in the background and are saved to disk. */
    public void shutdown() {
       this.shuttingDown = true;
       this.clearCache();
-      this.loadingService.shutdownNow();
+      this.loadingService.shutdown();
    }
 
    @Override
@@ -183,7 +192,12 @@ public class SlippyMapTileCache implements TellusCacheHandle {
    }
 
    private void requestLoadLocked(SlippyMapTileCache.TileEntry entry, int priority, long revision, long now) {
-      if (this.shuttingDown || entry.loaded || entry.task != null || now < entry.retryAtNanos || this.currentLoadCount() >= MAX_ACTIVE_LOADS) {
+      if (this.shuttingDown
+         || entry.loaded
+         || entry.abandoned
+         || entry.task != null
+         || entry.retryScheduled && now - entry.retryAtNanos < 0L
+         || this.currentLoadCount() >= MAX_ACTIVE_LOADS) {
          return;
       }
 
@@ -197,41 +211,69 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       } catch (RejectedExecutionException ignored) {
          if (entry.task == task) {
             entry.task = null;
-            entry.retryAtNanos = now + RETRY_BASE_NANOS;
+            this.scheduleRetryLocked(entry, now + RETRY_BASE_NANOS);
          }
       }
    }
 
+   /** Abandons a task that has not sent its request; one that has finishes and saves its tile, but shows nothing. */
    private void cancelTaskLocked(SlippyMapTileCache.TileEntry entry) {
       SlippyMapTileCache.TileLoadTask task = entry.task;
       if (task != null) {
          entry.task = null;
-         task.cancel();
+         task.cancelled = true;
+         this.loadingService.remove(task);
+      }
+   }
+
+   private void scheduleRetryLocked(SlippyMapTileCache.TileEntry entry, long retryAtNanos) {
+      entry.retryScheduled = true;
+      entry.retryAtNanos = retryAtNanos;
+   }
+
+   private boolean isCancelled(SlippyMapTileCache.TileLoadTask task) {
+      return task.cancelled || this.shuttingDown;
+   }
+
+   /** Marks the task's request as sent, unless the task was cancelled while it waited for the server. */
+   private boolean commit(SlippyMapTileCache.TileLoadTask task) {
+      synchronized (this.schedulingLock) {
+         if (this.isCancelled(task)) {
+            return false;
+         }
+         task.committed = true;
+         return true;
       }
    }
 
    private void loadTile(SlippyMapTileCache.TileLoadTask task) {
-      NativeImage image;
+      byte[] data;
       try {
-         byte[] data = this.readTileData(task.entry.pos, task.source, task.generation, task);
-         if (task.cancelled || data == null) {
-            this.finishCancelled(task);
-            return;
-         }
-         image = NativeImage.read(new ByteArrayInputStream(data));
-      } catch (IOException error) {
-         if (this.isCancelledLoad(error, task)) {
+         data = this.readTileData(task);
+      } catch (MapTileServerGate.PausedException paused) {
+         this.finishDeferred(task, paused.resumeAtNanos());
+         return;
+      } catch (IOException | RuntimeException error) {
+         if (this.isCancelled(task)) {
             this.finishCancelled(task);
          } else {
             this.finishFailed(task, error);
          }
          return;
-      } catch (RuntimeException error) {
-         if (task.cancelled || this.shuttingDown) {
-            this.finishCancelled(task);
-         } else {
-            this.finishFailed(task, error);
-         }
+      }
+      if (this.isCancelled(task)) {
+         // A download for a tile no longer wanted has been saved to disk; decoding it would only waste time.
+         this.finishCancelled(task);
+         return;
+      }
+
+      NativeImage image;
+      try {
+         image = NativeImage.read(new ByteArrayInputStream(data));
+      } catch (IOException | RuntimeException error) {
+         // A truncated PNG passes the header check; drop it from disk, so the next attempt downloads it again.
+         this.deleteCachedTile(task);
+         this.finishFailed(task, new SlippyMapTileCache.InvalidTileException(task.source.providerName() + " tile " + task.entry.pos + " cannot be decoded", error));
          return;
       }
 
@@ -247,7 +289,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          if (accepted) {
             task.entry.loaded = true;
             task.entry.failures = 0;
-            task.entry.retryAtNanos = 0L;
+            task.entry.retryScheduled = false;
          }
       }
 
@@ -266,9 +308,20 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       }
    }
 
+   /** The server is paused: ask again once it resumes, without counting this as a failure of the tile. */
+   private void finishDeferred(SlippyMapTileCache.TileLoadTask task, long resumeAtNanos) {
+      synchronized (this.schedulingLock) {
+         if (task.entry.task == task) {
+            task.entry.task = null;
+            this.scheduleRetryLocked(task.entry, resumeAtNanos);
+         }
+      }
+   }
+
    private void finishFailed(SlippyMapTileCache.TileLoadTask task, Throwable error) {
+      boolean tileOnly = concernsTileOnly(error);
       int failures;
-      long retryDelay;
+      boolean abandoned;
       synchronized (this.schedulingLock) {
          if (task.cancelled || this.shuttingDown || task.entry.task != task) {
             return;
@@ -276,98 +329,94 @@ public class SlippyMapTileCache implements TellusCacheHandle {
          task.entry.task = null;
          failures = Math.min(task.entry.failures + 1, 30);
          task.entry.failures = failures;
-         retryDelay = retryDelayNanos(error, failures);
-         task.entry.retryAtNanos = System.nanoTime() + retryDelay;
+         // Asking again for a tile the server says is missing or broken would not change its answer.
+         abandoned = tileOnly && failures >= MAX_TILE_ERROR_ATTEMPTS;
+         task.entry.abandoned = abandoned;
+         this.scheduleRetryLocked(task.entry, System.nanoTime() + retryDelayNanos(failures));
       }
 
-      if (failures == 1) {
-         Tellus.LOGGER.warn(
-            "Failed to load {} map tile {}; retrying in {} ms",
-            task.source.providerName(),
-            task.entry.pos,
-            TimeUnit.NANOSECONDS.toMillis(retryDelay),
-            error
-         );
+      if (error instanceof RuntimeException && failures == 1) {
+         Tellus.LOGGER.warn("Failed to load {} map tile {}", task.source.providerName(), task.entry.pos, error);
+      } else if (abandoned) {
+         Tellus.LOGGER.debug("Giving up on {} map tile {} after {} attempts: {}", task.source.providerName(), task.entry.pos, failures, error.toString());
       } else {
-         Tellus.LOGGER.debug("{} map tile {} failed again (attempt {})", task.source.providerName(), task.entry.pos, failures, error);
+         // Refusals and outages of the whole server are logged once by its gate.
+         Tellus.LOGGER.debug("{} map tile {} failed (attempt {}): {}", task.source.providerName(), task.entry.pos, failures, error.toString());
       }
    }
 
-   private byte[] readTileData(SlippyMapTilePos pos, MapTileSource source, long generation, SlippyMapTileCache.TileLoadTask task) throws IOException {
-      this.throwIfCancelled(task);
-      Path cachePath = source.cacheDirectory(this.cacheRoot).resolve(pos.getCacheName());
-      if (Files.isRegularFile(cachePath)) {
-         if (Files.size(cachePath) <= MAX_TILE_BYTES) {
-            try (InputStream input = new BufferedInputStream(Files.newInputStream(cachePath))) {
-               byte[] data = MapTileImageValidator.readBounded(input, MAX_TILE_BYTES);
-               MapTileImageValidator.validatePng(data, MAX_TILE_DIMENSION, MAX_TILE_DIMENSION);
-               this.throwIfCancelled(task);
-               return data;
-            } catch (IOException invalidCache) {
-               if (this.isCancelledLoad(invalidCache, task)) {
-                  throw invalidCache;
-               }
-               Files.deleteIfExists(cachePath);
-            }
-         } else {
-            Files.deleteIfExists(cachePath);
-         }
-      }
+   private static boolean concernsTileOnly(Throwable error) {
+      return error instanceof MapTileDownloader.TileResponseException response && response.concernsTileOnly()
+         || error instanceof MapTileDownloader.TileTooLargeException
+         || error instanceof SlippyMapTileCache.InvalidTileException;
+   }
 
-      URI uri = URI.create(source.tileUrl(pos));
-      URL url = uri.toURL();
-      HttpURLConnection connection = (HttpURLConnection)url.openConnection();
-      task.attachConnection(connection);
+   private Path cachePath(SlippyMapTileCache.TileLoadTask task) {
+      return task.source.cacheDirectory(this.cacheRoot).resolve(task.entry.pos.getCacheName());
+   }
+
+   private void deleteCachedTile(SlippyMapTileCache.TileLoadTask task) {
       try {
-         connection.setConnectTimeout(5000);
-         connection.setReadTimeout(7000);
-         connection.setUseCaches(true);
-         connection.setRequestProperty("Accept", "image/png");
-         connection.setRequestProperty("User-Agent", USER_AGENT);
-         int responseCode = connection.getResponseCode();
-         if (responseCode != HttpURLConnection.HTTP_OK) {
-            throw new SlippyMapTileCache.TileHttpException(
-               responseCode, source.providerName() + " tile request failed with HTTP " + responseCode + " for " + pos
-            );
-         }
-         long contentLength = connection.getContentLengthLong();
-         if (contentLength > MAX_TILE_BYTES) {
-            throw new IOException(source.providerName() + " tile response exceeds the safety limit for " + pos);
-         }
-
-         InputStream stream = Objects.requireNonNull(connection.getInputStream(), "tileStream");
-         task.attachStream(stream);
-         try (InputStream input = new BufferedInputStream(stream)) {
-            byte[] downloaded = MapTileImageValidator.readBounded(input, MAX_TILE_BYTES);
-            MapTileImageValidator.validatePng(downloaded, MAX_TILE_DIMENSION, MAX_TILE_DIMENSION);
-            this.throwIfCancelled(task);
-            // Cache the scaled tile, so reading it back from disk needs no scaling.
-            byte[] data = MapTileImages.fitToTileSize(downloaded, SlippyMap.TILE_SIZE);
-            if (!this.shuttingDown && TellusCacheRegistry.isCurrent(TellusCacheDomain.OSM, generation)) {
-               this.cacheData(cachePath, data, generation);
-            }
-            return data;
-         } finally {
-            task.detachStream(stream);
-         }
-      } finally {
-         task.detachConnection(connection);
-         connection.disconnect();
+         Files.deleteIfExists(this.cachePath(task));
+      } catch (IOException error) {
+         Tellus.LOGGER.debug("Failed to delete broken map tile {}", this.cachePath(task), error);
       }
    }
 
-   private void throwIfCancelled(SlippyMapTileCache.TileLoadTask task) throws InterruptedIOException {
-      if (task.cancelled || this.shuttingDown || Thread.currentThread().isInterrupted()) {
+   private byte[] readTileData(SlippyMapTileCache.TileLoadTask task) throws IOException {
+      Path cachePath = this.cachePath(task);
+      byte[] cached = readCachedTile(cachePath);
+      if (cached != null) {
+         return cached;
+      }
+      if (this.isCancelled(task)) {
          throw new InterruptedIOException("Map tile request was cancelled");
       }
+
+      byte[] downloaded = DOWNLOADER.download(
+         URI.create(task.source.tileUrl(task.entry.pos)), task.source.gate(), MAX_TILE_BYTES, new MapTileDownloader.Request() {
+            @Override
+            public boolean cancelled() {
+               return SlippyMapTileCache.this.isCancelled(task);
+            }
+
+            @Override
+            public boolean commit() {
+               return SlippyMapTileCache.this.commit(task);
+            }
+         }
+      );
+      byte[] data;
+      try {
+         MapTileImageValidator.validatePng(downloaded, MAX_TILE_DIMENSION, MAX_TILE_DIMENSION);
+         // Cache the scaled tile, so reading it back from disk needs no scaling.
+         data = MapTileImages.fitToTileSize(downloaded, SlippyMap.TILE_SIZE);
+      } catch (IOException invalid) {
+         throw new SlippyMapTileCache.InvalidTileException(task.source.providerName() + " sent an unusable tile for " + task.entry.pos, invalid);
+      }
+      // Saved even when the tile is no longer wanted, since it may be wanted again.
+      if (TellusCacheRegistry.isCurrent(TellusCacheDomain.OSM, task.generation)) {
+         this.cacheData(cachePath, data, task.generation);
+      }
+      return data;
    }
 
-   private boolean isCancelledLoad(IOException error, SlippyMapTileCache.TileLoadTask task) {
-      return task.cancelled
-         || this.shuttingDown
-         || Thread.currentThread().isInterrupted()
-         || error instanceof InterruptedIOException
-         || error instanceof ClosedByInterruptException;
+   /** The cached tile, or null when there is none; a broken or oversized file is deleted. */
+   private static byte[] readCachedTile(Path cachePath) throws IOException {
+      if (!Files.isRegularFile(cachePath)) {
+         return null;
+      }
+      if (Files.size(cachePath) <= MAX_TILE_BYTES) {
+         try (InputStream input = new BufferedInputStream(Files.newInputStream(cachePath))) {
+            byte[] data = MapTileImageValidator.readBounded(input, MAX_TILE_BYTES);
+            MapTileImageValidator.validatePng(data, MAX_TILE_DIMENSION, MAX_TILE_DIMENSION);
+            return data;
+         } catch (IOException invalidCache) {
+            Tellus.LOGGER.debug("Discarding unreadable cached map tile {}", cachePath, invalidCache);
+         }
+      }
+      Files.deleteIfExists(cachePath);
+      return null;
    }
 
    private void cacheData(Path cachePath, byte[] data, long generation) {
@@ -378,10 +427,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       }
    }
 
-   private static long retryDelayNanos(Throwable error, int failures) {
-      if (error instanceof SlippyMapTileCache.TileHttpException httpError && (httpError.status == 429 || httpError.status >= 500)) {
-         return RETRY_MAX_NANOS;
-      }
+   private static long retryDelayNanos(int failures) {
       int shift = Math.min(Math.max(0, failures - 1), 5);
       return Math.min(RETRY_MAX_NANOS, RETRY_BASE_NANOS << shift);
    }
@@ -450,7 +496,10 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       private final SlippyMapTile tile;
       private SlippyMapTileCache.TileLoadTask task;
       private boolean loaded;
+      /** Set once the server has answered this tile with errors often enough; it is not asked for again. */
+      private boolean abandoned;
       private int failures;
+      private boolean retryScheduled;
       private long retryAtNanos;
 
       private TileEntry(SlippyMapTilePos pos, String textureKey) {
@@ -467,10 +516,10 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       private final int priority;
       private final long sequence;
       private volatile boolean cancelled;
+      /** A worker has taken the task: it is reading the cached tile or waiting for the server. */
       private volatile boolean started;
-      private volatile Thread runner;
-      private volatile HttpURLConnection connection;
-      private volatile InputStream stream;
+      /** The request has been sent; from now on the download finishes even when the tile is no longer wanted. */
+      private volatile boolean committed;
 
       private TileLoadTask(SlippyMapTileCache.TileEntry entry, MapTileSource source, long generation, long revision, int priority, long sequence) {
          this.entry = entry;
@@ -487,64 +536,7 @@ public class SlippyMapTileCache implements TellusCacheHandle {
             return;
          }
          this.started = true;
-         this.runner = Thread.currentThread();
-         try {
-            if (!this.cancelled) {
-               SlippyMapTileCache.this.loadTile(this);
-            }
-         } finally {
-            this.closeNetwork();
-            this.runner = null;
-         }
-      }
-
-      private void cancel() {
-         this.cancelled = true;
-         SlippyMapTileCache.this.loadingService.remove(this);
-         this.closeNetwork();
-         Thread thread = this.runner;
-         if (thread != null && thread != Thread.currentThread()) {
-            thread.interrupt();
-         }
-      }
-
-      private void attachConnection(HttpURLConnection connection) throws InterruptedIOException {
-         this.connection = connection;
-         if (this.cancelled) {
-            connection.disconnect();
-            throw new InterruptedIOException("Map tile request was cancelled");
-         }
-      }
-
-      private void detachConnection(HttpURLConnection connection) {
-         if (this.connection == connection) {
-            this.connection = null;
-         }
-      }
-
-      private void attachStream(InputStream stream) throws InterruptedIOException {
-         this.stream = stream;
-         if (this.cancelled) {
-            closeQuietly(stream);
-            throw new InterruptedIOException("Map tile request was cancelled");
-         }
-      }
-
-      private void detachStream(InputStream stream) {
-         if (this.stream == stream) {
-            this.stream = null;
-         }
-      }
-
-      private void closeNetwork() {
-         InputStream activeStream = this.stream;
-         if (activeStream != null) {
-            closeQuietly(activeStream);
-         }
-         HttpURLConnection activeConnection = this.connection;
-         if (activeConnection != null) {
-            activeConnection.disconnect();
-         }
+         SlippyMapTileCache.this.loadTile(this);
       }
 
       @Override
@@ -558,19 +550,10 @@ public class SlippyMapTileCache implements TellusCacheHandle {
       }
    }
 
-   private static final class TileHttpException extends IOException {
-      private final int status;
-
-      private TileHttpException(int status, String message) {
-         super(message);
-         this.status = status;
-      }
-   }
-
-   private static void closeQuietly(InputStream stream) {
-      try {
-         stream.close();
-      } catch (IOException ignored) {
+   /** The server sent something that is not a usable tile image. */
+   private static final class InvalidTileException extends IOException {
+      private InvalidTileException(String message, Throwable cause) {
+         super(message, cause);
       }
    }
 }
