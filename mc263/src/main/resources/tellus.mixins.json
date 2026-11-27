@@ -21,6 +21,7 @@
 		"ServerMainNewWorldHeightMixin",
 		"WaterSourceConversionMixin",
 		"WorldGenRegionMapEdgeMixin",
+		"WorldGenRegionOldChunkMixin",
 		"WorldBorderMapEdgeMixin"
 	],
 	"injectors": {

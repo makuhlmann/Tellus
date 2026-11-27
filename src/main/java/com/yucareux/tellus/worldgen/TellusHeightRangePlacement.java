@@ -1,17 +1,25 @@
 package com.yucareux.tellus.worldgen;
 
+import com.yucareux.tellus.compat.MinecraftVersionCompat;
 import com.yucareux.tellus.worldgen.caves.TellusCaveDepthMapper;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.levelgen.WorldGenerationContext;
 import net.minecraft.world.level.levelgen.heightproviders.HeightProvider;
 import net.minecraft.world.level.levelgen.placement.PlacementContext;
 
 /** Shared surface-relative underground placement, independent of mixin signatures. */
 public final class TellusHeightRangePlacement {
+   private static final Predicate<BlockState> IS_BEDROCK = state -> state.is(Blocks.BEDROCK);
+
    private TellusHeightRangePlacement() {}
 
    /** Returns null when vanilla should handle this placement. */
@@ -96,6 +104,7 @@ public final class TellusHeightRangePlacement {
       return minimumSurfaceY;
    }
 
+   /** Just above the highest bedrock below the surface in the origin's column, or the deepest generated Y without one. */
    private static int findUsableUndergroundBottom(
       PlacementContext context,
       EarthChunkGenerator generator,
@@ -107,11 +116,30 @@ public final class TellusHeightRangePlacement {
          generator.settings().undergroundDepth(),
          context.getLevel().dimensionType().minY()
       );
-      BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos(origin.getX(), surfaceY - 1, origin.getZ());
-      for (int y = surfaceY - 1; y >= searchBottom; y--) {
-         cursor.setY(y);
-         if (context.getBlockState(cursor).is(Blocks.BEDROCK)) {
-            return Math.min(surfaceY - 1, y + 1);
+      // This runs for every ore and stone placement, hundreds per chunk on the single worldgen queue, so the chunk is
+      // looked up once and only sections whose palette can hold bedrock are read block by block. Heights outside the
+      // chunk read as void air, never bedrock, so clamping to it finds the same block. getSections() is the real
+      // chunk's array even for a read-only ImposterProtoChunk around a finished chunk.
+      ChunkAccess chunk = context.getLevel().getChunk(origin);
+      LevelChunkSection[] sections = chunk.getSections();
+      int chunkMinY = MinecraftVersionCompat.minY(chunk);
+      int bottom = Math.max(searchBottom, chunkMinY);
+      int localX = origin.getX() & 15;
+      int localZ = origin.getZ() & 15;
+      int y = Math.min(surfaceY - 1, chunkMinY + chunk.getHeight() - 1);
+      while (y >= bottom) {
+         int sectionIndex = chunk.getSectionIndex(y);
+         LevelChunkSection section = sections[sectionIndex];
+         int sectionMinY = SectionPos.sectionToBlockCoord(chunk.getSectionYFromSectionIndex(sectionIndex));
+         int sectionStop = Math.max(bottom, sectionMinY);
+         if (section.maybeHas(IS_BEDROCK)) {
+            for (; y >= sectionStop; y--) {
+               if (section.getBlockState(localX, y & 15, localZ).is(Blocks.BEDROCK)) {
+                  return Math.min(surfaceY - 1, y + 1);
+               }
+            }
+         } else {
+            y = sectionStop - 1;
          }
       }
       return searchBottom;
